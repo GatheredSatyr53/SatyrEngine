@@ -63,6 +63,8 @@ typedef std::ptrdiff_t GLsizeiptr;
 #define GL_PIXEL_PACK_BUFFER              0x88EB
 #define GL_STREAM_READ                    0x88E1
 #define GL_MAP_READ_BIT                   0x0001
+#define GL_CONSTANT_ALPHA                 0x8003
+#define GL_ONE_MINUS_CONSTANT_ALPHA       0x8004
 #define GL_NEAREST                        0x2600
 #define GL_LINEAR                         0x2601
 #define GL_TEXTURE_MAG_FILTER             0x2800
@@ -105,6 +107,8 @@ typedef std::ptrdiff_t GLsizeiptr;
     X(glClearColor,             void, (GLfloat r, GLfloat g, GLfloat b, GLfloat a)) \
     X(glClear,                  void, (GLbitfield mask)) \
     X(glFinish,                 void, (void)) \
+    X(glBlendFunc,              void, (GLenum sfactor, GLenum dfactor)) \
+    X(glBlendColor,             void, (GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha)) \
     X(glCreateShader,           GLuint, (GLenum type)) \
     X(glShaderSource,           void, (GLuint shader, GLsizei count, const GLchar* const* string, const GLint* length)) \
     X(glCompileShader,          void, (GLuint shader)) \

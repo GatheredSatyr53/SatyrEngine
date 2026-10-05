@@ -3,9 +3,10 @@
 #include "uniforms.glsl"
 
 // Normalized device-like coordinates: y in [-1, 1], x scaled by the aspect ratio.
+// uJitter moves the sample inside the pixel while frames are being accumulated.
 vec2 screenUV(vec2 fragCoord)
 {
-    return (2.0 * fragCoord - uResolution) / uResolution.y;
+    return (2.0 * (fragCoord + uJitter) - uResolution) / uResolution.y;
 }
 
 // Primary ray direction for a pixel using the interactive camera.

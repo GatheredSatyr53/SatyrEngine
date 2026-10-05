@@ -43,7 +43,10 @@ public:
     bool empty() const { return m_bodies.empty(); }
 
     bool add(const Body& body); // false when kMaxBodies is reached
-    void clear() { m_bodies.clear(); }
+    void clear() { m_bodies.clear(); ++m_version; }
+
+    // Increments whenever bodies are added, removed or moved (used to reset frame accumulation).
+    unsigned long long version() const { return m_version; }
 
     // `field[i]` is the sample at m_bodies[i].position taken before this step (may be shorter
     // than bodies(): bodies without a sample skip scene collision this frame).
@@ -58,6 +61,7 @@ private:
     void collideBodies();
 
     std::vector<Body> m_bodies;
+    unsigned long long m_version = 0;
 };
 
 } // namespace satyr

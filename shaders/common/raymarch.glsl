@@ -62,10 +62,11 @@ struct Edge {
     float a;    // coverage, already attenuated by the layers in front (sum over layers <= 1)
 };
 
-// Radius of one pixel at unit distance for the engine camera.
+// Radius of one pixel at unit distance for the engine camera. While frames are accumulated the
+// engine shrinks it (uPxScale) so the cone AA stops fattening silhouettes and jitter takes over.
 float pixelRadius()
 {
-    return tan(0.5 * uCamFov) / uResolution.y;
+    return tan(0.5 * uCamFov) / uResolution.y * uPxScale;
 }
 
 // Refines the closest approach from three consecutive samples (d1 > d2 < d3) by fitting a

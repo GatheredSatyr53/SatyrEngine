@@ -9,12 +9,14 @@ bool Physics::add(const Body& body)
 {
     if (m_bodies.size() >= static_cast<size_t>(kMaxBodies)) return false;
     m_bodies.push_back(body);
+    ++m_version;
     return true;
 }
 
 void Physics::step(float dt, const std::vector<SurfaceSample>& field)
 {
     if (m_bodies.empty() || dt <= 0.0f) return;
+    ++m_version;
 
     const int steps = std::max(1, substeps);
     const float h = dt / static_cast<float>(steps);

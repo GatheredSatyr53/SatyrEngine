@@ -31,34 +31,53 @@ void Renderer::shutdown()
     }
 }
 
-void Renderer::beginFrame(int fbWidth, int fbHeight, float scale)
+void Renderer::setupFrame(int fbWidth, int fbHeight, float scale)
 {
     m_fbW = std::max(fbWidth, 1);
     m_fbH = std::max(fbHeight, 1);
     const bool nativeScale = std::fabs(scale - 1.0f) < 1e-4f;
     m_renderW = nativeScale ? m_fbW : std::max(1, static_cast<int>(std::lround(m_fbW * scale)));
     m_renderH = nativeScale ? m_fbH : std::max(1, static_cast<int>(std::lround(m_fbH * scale)));
-    m_offscreen = !nativeScale;
+    ensureTarget(m_renderW, m_renderH);
+}
 
-    if (m_offscreen) {
-        ensureTarget(m_renderW, m_renderH);
-        glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
-    } else {
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    }
+void Renderer::beginFrame(int fbWidth, int fbHeight, float scale, float blendWeight)
+{
+    setupFrame(fbWidth, fbHeight, scale);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
     glViewport(0, 0, m_renderW, m_renderH);
     glBindVertexArray(m_vao);
+
+    if (blendWeight < 1.0f && !m_recreated) {
+        glEnable(GL_BLEND);
+        glBlendColor(0.0f, 0.0f, 0.0f, std::max(blendWeight, 0.0f));
+        glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE_MINUS_CONSTANT_ALPHA);
+    } else {
+        glDisable(GL_BLEND);
+    }
 }
 
 void Renderer::drawFullscreen() { glDrawArrays(GL_TRIANGLES, 0, 3); }
 
 void Renderer::endFrame()
 {
-    if (!m_offscreen) return;
+    glDisable(GL_BLEND);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, m_fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     glBlitFramebuffer(0, 0, m_renderW, m_renderH, 0, 0, m_fbW, m_fbH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void Renderer::present(int fbWidth, int fbHeight, float scale)
+{
+    setupFrame(fbWidth, fbHeight, scale);
+    if (m_recreated) {
+        // Nothing valid to show yet; clear so the window does not display garbage.
+        glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+    endFrame();
 }
 
 bool Renderer::readWindowPixels(std::vector<std::uint8_t>& rgb, int& width, int& height) const
@@ -75,12 +94,15 @@ bool Renderer::readWindowPixels(std::vector<std::uint8_t>& rgb, int& width, int&
 
 void Renderer::ensureTarget(int w, int h)
 {
+    m_recreated = false;
     if (m_fbo && w == m_targetW && h == m_targetH) return;
     destroyTarget();
+    m_recreated = true;
 
     glGenTextures(1, &m_color);
     glBindTexture(GL_TEXTURE_2D, m_color);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    // 32-bit float keeps the running average exact over hundreds of accumulated frames.
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, w, h, 0, GL_RGBA, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);

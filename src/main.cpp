@@ -48,8 +48,11 @@ struct Options {
     fs::path screenshot;            // when set, saved on the last frame (or when --frames is given)
     bool vsync = true;
     bool physics = true;
+    bool startPaused = false;       // start with scene time paused (frames accumulate right away)
     bool help = false;
 };
+
+constexpr int kMaxAccumFrames = 1024;   // stop rendering once this many samples are averaged
 
 constexpr std::array<float, 8> kRenderScales = {0.125f, 0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f};
 
@@ -66,6 +69,7 @@ void printUsage(const char* exe)
         "      --frames N       render N frames and exit (handy with --screenshot)\n"
         "      --screenshot F   save a PNG to F before exiting\n"
         "      --spawn N        drop N physics balls at start\n"
+        "      --paused         start with scene time paused, so frames accumulate immediately\n"
         "      --no-physics     disable the physics system\n"
         "      --no-vsync       disable vertical sync\n"
         "      --help           show this help\n",
@@ -84,6 +88,7 @@ void printControls()
         "  [ ]  or PgUp/PgDn     previous / next scene\n"
         "  R                     reload shaders (they also reload automatically on save)\n"
         "  P / T                 pause / reset scene time (physics pauses too)\n"
+        "                        while paused and the camera is still, frames accumulate: AA converges\n"
         "  B / G / X             throw a ball / drop a handful / clear all balls\n"
         "  - / =                 lower / raise render resolution scale\n"
         "  F2 or F12             screenshot (saved into ./screenshots)\n"
@@ -139,6 +144,8 @@ bool parseArgs(int argc, char** argv, Options& opt)
             opt.vsync = false;
         } else if (a == "--no-physics") {
             opt.physics = false;
+        } else if (a == "--paused") {
+            opt.startPaused = true;
         } else if (!a.empty() && a[0] == '-') {
             std::fprintf(stderr, "unknown option: %s\n", a.c_str());
             return false;
@@ -302,7 +309,42 @@ struct FrameUniforms {
     vec3 camPos;
     mat3 camBasis;
     float fov = 1.0f;
+    float jitter[2] = {0.0f, 0.0f};
+    float pxScale = 1.0f;
+    int accumFrame = 0;
 };
+
+// Radical-inverse sequence used for sub-pixel jitter: well spread for any sample count.
+float halton(int index, int base)
+{
+    float result = 0.0f;
+    float f = 1.0f / static_cast<float>(base);
+    for (int i = index; i > 0; i /= base) {
+        result += f * static_cast<float>(i % base);
+        f /= static_cast<float>(base);
+    }
+    return result;
+}
+
+// Everything that must stay identical between frames for accumulation to be valid.
+struct StillState {
+    vec3 camPos;
+    float yaw = 0, pitch = 0, fov = 0;
+    int fbW = 0, fbH = 0;
+    float scale = 0;
+    float mouse[4] = {0, 0, 0, 0};
+    unsigned long long physicsVersion = 0;
+    double time = 0;
+};
+
+bool sameView(const StillState& a, const StillState& b)
+{
+    return a.camPos.x == b.camPos.x && a.camPos.y == b.camPos.y && a.camPos.z == b.camPos.z
+        && a.yaw == b.yaw && a.pitch == b.pitch && a.fov == b.fov
+        && a.fbW == b.fbW && a.fbH == b.fbH && a.scale == b.scale
+        && a.mouse[0] == b.mouse[0] && a.mouse[1] == b.mouse[1] && a.mouse[2] == b.mouse[2] && a.mouse[3] == b.mouse[3]
+        && a.physicsVersion == b.physicsVersion && a.time == b.time;
+}
 
 void uploadSceneUniforms(Shader& shader, const FrameUniforms& u)
 {
@@ -314,6 +356,9 @@ void uploadSceneUniforms(Shader& shader, const FrameUniforms& u)
     shader.set("uCamPos", u.camPos);
     shader.set("uCamBasis", u.camBasis);
     shader.set("uCamFov", u.fov);
+    shader.set("uJitter", vec2(u.jitter[0], u.jitter[1]));
+    shader.set("uPxScale", u.pxScale);
+    shader.set("uAccumFrame", u.accumFrame);
 }
 
 void uploadBodies(Shader& shader, const Physics& physics)
@@ -490,7 +535,10 @@ int main(int argc, char** argv)
     float renderScale = opt.scale;
     double sceneTime = opt.startTime;
     int frame = 0;
-    bool paused = false;
+    bool paused = opt.startPaused;
+    int accumFrames = 0;        // samples currently averaged in the render target
+    bool accumReset = false;    // set by events that invalidate the accumulated image
+    StillState prevStill;
     bool captureToggled = false;
     bool screenshotRequested = false;
     bool shaderErrorShown = false;
@@ -524,6 +572,7 @@ int main(int argc, char** argv)
 
         bool sceneChanged = false;
         if (in.pressed(GLFW_KEY_R)) {
+            accumReset = true;
             shader.reload();
             if (physicsEnabled) {
                 probe.reload();
@@ -547,6 +596,7 @@ int main(int argc, char** argv)
             sceneTarget = applySceneView(shader, camera);
             shaderErrorShown = false;
             sceneChanged = true;
+            accumReset = true;
         }
         if (in.pressed(GLFW_KEY_MINUS) || in.pressed(GLFW_KEY_EQUAL)) {
             size_t idx = nearestScaleIndex(renderScale);
@@ -575,6 +625,7 @@ int main(int argc, char** argv)
 
         if (shader.pollHotReload(now)) {
             shaderErrorShown = false;
+            accumReset = true;
             if (physicsEnabled) {
                 probe.reload();
                 physicsActive = refreshPhysicsState(probe, shader, preprocessor, scenes.current());
@@ -585,8 +636,42 @@ int main(int argc, char** argv)
             shaderErrorShown = true;
         }
 
+        // ---- Accumulation ------------------------------------------------------------------------
+        // Scenes that never read the time are static, so they converge even while unpaused (as
+        // long as no physics bodies are around to move); everything else needs the pause.
+        const bool sceneStatic = shader.valid() && shader.uniform("uTime") < 0
+                              && shader.uniform("uDeltaTime") < 0 && shader.uniform("uFrame") < 0;
+        const bool mayAccumulate = shader.valid() && (paused || (sceneStatic && physics.empty()));
+
+        StillState still;
+        still.camPos = camera.position;
+        still.yaw = camera.yaw;
+        still.pitch = camera.pitch;
+        still.fov = camera.fov;
+        still.fbW = window.framebufferWidth();
+        still.fbH = window.framebufferHeight();
+        still.scale = renderScale;
+        still.physicsVersion = physics.version();
+        still.time = sceneStatic ? 0.0 : sceneTime;
+        {
+            int winW = 1, winH = 1;
+            glfwGetWindowSize(window.handle(), &winW, &winH);
+            still.mouse[0] = static_cast<float>(in.mouseX) / static_cast<float>(std::max(winW, 1));
+            still.mouse[1] = static_cast<float>(in.mouseY) / static_cast<float>(std::max(winH, 1));
+            still.mouse[2] = in.mouse(GLFW_MOUSE_BUTTON_LEFT) ? 1.0f : 0.0f;
+            still.mouse[3] = in.mouse(GLFW_MOUSE_BUTTON_RIGHT) ? 1.0f : 0.0f;
+        }
+        if (accumReset || !mayAccumulate || !sameView(still, prevStill)) accumFrames = 0;
+        prevStill = still;
+        accumReset = false;
+
+        const bool accumulating = mayAccumulate && accumFrames > 0;
+        const bool converged = accumulating && accumFrames >= kMaxAccumFrames;
+        const float blendWeight = accumulating ? 1.0f / static_cast<float>(accumFrames + 1) : 1.0f;
+
         // ---- Frame uniforms ----------------------------------------------------------------------
-        renderer.beginFrame(window.framebufferWidth(), window.framebufferHeight(), renderScale);
+        renderer.beginFrame(window.framebufferWidth(), window.framebufferHeight(), renderScale, blendWeight);
+        if (renderer.targetWasRecreated()) accumFrames = 0;
 
         FrameUniforms u;
         {
@@ -605,6 +690,12 @@ int main(int argc, char** argv)
             u.camPos = camera.position;
             u.camBasis = camera.basis();
             u.fov = camera.fov;
+            if (accumulating) {
+                u.jitter[0] = halton(accumFrames, 2) - 0.5f;
+                u.jitter[1] = halton(accumFrames, 3) - 0.5f;
+                u.pxScale = 0.25f;
+                u.accumFrame = accumFrames;
+            }
         }
 
         // ---- Physics -----------------------------------------------------------------------------
@@ -619,16 +710,22 @@ int main(int argc, char** argv)
         }
 
         // ---- Render ------------------------------------------------------------------------------
-        if (shader.valid()) {
-            shader.bind();
-            uploadSceneUniforms(shader, u);
-            uploadBodies(shader, physics);
-            renderer.drawFullscreen();
+        if (converged) {
+            // Enough samples: just show the averaged image again.
+            renderer.present(window.framebufferWidth(), window.framebufferHeight(), renderScale);
         } else {
-            glClearColor(0.35f, 0.0f, 0.3f, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT);
+            if (shader.valid()) {
+                shader.bind();
+                uploadSceneUniforms(shader, u);
+                uploadBodies(shader, physics);
+                renderer.drawFullscreen();
+            } else {
+                glClearColor(0.35f, 0.0f, 0.3f, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT);
+            }
+            renderer.endFrame();
+            if (mayAccumulate) ++accumFrames;
         }
-        renderer.endFrame();
 
         const bool lastFrame = opt.frames >= 0 && frame + 1 >= opt.frames;
         if (screenshotRequested || (lastFrame && !opt.screenshot.empty())) {
@@ -648,11 +745,13 @@ int main(int argc, char** argv)
             const double fps = titleFrames / std::max(now - titleTimer, 1e-6);
             const double ms = 1000.0 * (now - titleTimer) / std::max(titleFrames, 1);
             char buf[512];
-            std::snprintf(buf, sizeof(buf), "Satyr | %s | %dx%d (x%s) | %.0f fps / %.1f ms | t=%.1fs | %d bodies%s%s",
+            char accum[48] = "";
+            if (accumFrames > 1) std::snprintf(accum, sizeof(accum), " | %d samples", std::min(accumFrames, kMaxAccumFrames));
+            std::snprintf(buf, sizeof(buf), "Satyr | %s | %dx%d (x%s) | %.0f fps / %.1f ms | t=%.1fs | %d bodies%s%s%s",
                           preprocessor.displayName(scenes.current()).c_str(),
                           renderer.renderWidth(), renderer.renderHeight(), formatScale(renderScale).c_str(),
                           fps, ms, sceneTime, static_cast<int>(physics.size()),
-                          paused ? " [paused]" : "",
+                          paused ? " [paused]" : "", accum,
                           shader.valid() ? "" : " | SHADER ERROR (see console)");
             window.setTitle(buf);
             titleTimer = now;
@@ -663,7 +762,8 @@ int main(int argc, char** argv)
 
     if (frame > 0) {
         const double elapsed = glfwGetTime() - runStart;
-        std::printf("[stats] %d frames in %.2f s, %.2f ms/frame average\n", frame, elapsed, 1000.0 * elapsed / frame);
+        std::printf("[stats] %d frames in %.2f s, %.2f ms/frame average, %d samples accumulated\n",
+                    frame, elapsed, 1000.0 * elapsed / frame, accumFrames);
     }
     if (physicsEnabled && !physics.empty()) {
         float lowest = 1e9f;
