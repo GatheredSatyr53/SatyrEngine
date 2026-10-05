@@ -7,6 +7,7 @@
 #include "common/camera.glsl"
 #include "common/sdf.glsl"
 #include "common/ops.glsl"
+#include "common/bodies.glsl"
 #include "common/lighting.glsl"
 
 out vec4 fragColor;
@@ -62,11 +63,15 @@ vec2 map(vec3 p)
         res = opU(res, vec2(cup, MAT_CUP));
     }
 
+    // Physics balls (press B).
+    res = opU(res, sdBodies(p));
     return res;
 }
 
-vec3 material(int id, vec3 p)
+vec3 material(float mat, vec3 p)
 {
+    if (isBody(mat)) return bodyColor(bodyIndex(mat));
+    int id = int(mat + 0.5);
     if (id == 0) {
         vec3 c = mix(vec3(0.22, 0.22, 0.24), vec3(0.65, 0.63, 0.6), checker(p.xz));
         // Thin grid lines every unit.
@@ -96,7 +101,7 @@ void main()
         vec3 p = ro + rd * h.t;
         vec3 n = calcNormal(p);
         int id = int(h.mat + 0.5);
-        col = shadeStandard(p, n, rd, material(id, p), sunDir, id == 3 ? 128.0 : 32.0);
+        col = shadeStandard(p, n, rd, material(h.mat, p), sunDir, id == 3 ? 128.0 : 32.0);
         col = applyFog(col, h.t, sky, 0.015);
     }
 

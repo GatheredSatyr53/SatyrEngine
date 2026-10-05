@@ -59,6 +59,10 @@ typedef std::ptrdiff_t GLsizeiptr;
 #define GL_RGBA                           0x1908
 #define GL_RGBA8                          0x8058
 #define GL_RGBA16F                        0x881A
+#define GL_RGBA32F                        0x8814
+#define GL_PIXEL_PACK_BUFFER              0x88EB
+#define GL_STREAM_READ                    0x88E1
+#define GL_MAP_READ_BIT                   0x0001
 #define GL_NEAREST                        0x2600
 #define GL_LINEAR                         0x2601
 #define GL_TEXTURE_MAG_FILTER             0x2800
@@ -121,6 +125,7 @@ typedef std::ptrdiff_t GLsizeiptr;
     X(glUniform2f,              void, (GLint location, GLfloat v0, GLfloat v1)) \
     X(glUniform3f,              void, (GLint location, GLfloat v0, GLfloat v1, GLfloat v2)) \
     X(glUniform4f,              void, (GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3)) \
+    X(glUniform4fv,             void, (GLint location, GLsizei count, const GLfloat* value)) \
     X(glUniformMatrix3fv,       void, (GLint location, GLsizei count, GLboolean transpose, const GLfloat* value)) \
     X(glGenVertexArrays,        void, (GLsizei n, GLuint* arrays)) \
     X(glBindVertexArray,        void, (GLuint array)) \
@@ -130,6 +135,7 @@ typedef std::ptrdiff_t GLsizeiptr;
     X(glBindTexture,            void, (GLenum target, GLuint texture)) \
     X(glActiveTexture,          void, (GLenum texture)) \
     X(glTexImage2D,             void, (GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void* pixels)) \
+    X(glTexSubImage2D,          void, (GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const void* pixels)) \
     X(glTexParameteri,          void, (GLenum target, GLenum pname, GLint param)) \
     X(glDeleteTextures,         void, (GLsizei n, const GLuint* textures)) \
     X(glGenFramebuffers,        void, (GLsizei n, GLuint* framebuffers)) \
@@ -140,7 +146,13 @@ typedef std::ptrdiff_t GLsizeiptr;
     X(glBlitFramebuffer,        void, (GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter)) \
     X(glReadBuffer,             void, (GLenum src)) \
     X(glReadPixels,             void, (GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void* pixels)) \
-    X(glPixelStorei,            void, (GLenum pname, GLint param))
+    X(glPixelStorei,            void, (GLenum pname, GLint param)) \
+    X(glGenBuffers,             void, (GLsizei n, GLuint* buffers)) \
+    X(glBindBuffer,             void, (GLenum target, GLuint buffer)) \
+    X(glBufferData,             void, (GLenum target, GLsizeiptr size, const void* data, GLenum usage)) \
+    X(glDeleteBuffers,          void, (GLsizei n, const GLuint* buffers)) \
+    X(glMapBufferRange,         void*, (GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access)) \
+    X(glUnmapBuffer,            GLboolean, (GLenum target))
 
 // Declare a function pointer for every entry: `extern PFN_glClear glClear;`
 #define SATYR_GL_DECLARE(name, ret, args) \

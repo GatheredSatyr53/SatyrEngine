@@ -14,6 +14,7 @@
 #include "common/sdf.glsl"
 #include "common/ops.glsl"
 #include "common/noise.glsl"
+#include "common/bodies.glsl"
 #include "common/lighting.glsl"
 
 out vec4 fragColor;
@@ -64,6 +65,9 @@ vec2 map(vec3 p)
         }
     }
     res = opU(res, vec2(d, matId));
+
+    // Physics balls (press B); note the cell offset applied to p above.
+    res = opU(res, sdBodies(p - vec3(0.5 * CELL, 0.0, 0.5 * CELL)));
     return res;
 }
 
@@ -87,7 +91,9 @@ void main()
         vec3 p = ro + rd * h.t;
         vec3 n = calcNormal(p);
 
-        if (h.mat >= MAT_ORB) {
+        if (isBody(h.mat)) {
+            col = shadeStandard(p, n, rd, bodyColor(bodyIndex(h.mat)), sunDir, 48.0) * 0.6;
+        } else if (h.mat >= MAT_ORB) {
             // Emissive orb: colour from the cell hash, brighter at grazing angles.
             vec3 c = palette(h.mat - MAT_ORB);
             float rim = pow(1.0 - max(dot(n, -rd), 0.0), 2.0);

@@ -6,10 +6,6 @@ namespace fs = std::filesystem;
 
 namespace satyr {
 
-namespace {
-const char* kPrelude = "#define SATYR_ENGINE 1\n";
-} // namespace
-
 Shader::Shader(const ShaderPreprocessor& preprocessor) : m_pp(preprocessor) {}
 
 Shader::~Shader()
@@ -28,16 +24,17 @@ bool Shader::reload()
 {
     m_lastError.clear();
 
-    PreprocessedSource vs = m_pp.process(m_vertexFile, kPrelude);
-    PreprocessedSource fsrc = m_pp.process(m_fragmentFile, kPrelude);
+    PreprocessedSource vs = m_pp.process(m_vertexFile, m_prelude);
+    PreprocessedSource fsrc = m_pp.process(m_fragmentFile, m_prelude);
     trackDependencies({&vs, &fsrc});
     m_directives = fsrc.directives;
 
     if (!vs.ok() || !fsrc.ok()) {
         m_lastError = !vs.ok() ? vs.error : fsrc.error;
-        std::fprintf(stderr, "[shader] %s\n", m_lastError.c_str());
+        if (!m_quiet) std::fprintf(stderr, "[shader] %s\n", m_lastError.c_str());
         return false;
     }
+    if (m_transform) m_transform(fsrc);
 
     const GLuint vert = compileStage(GL_VERTEX_SHADER, vs, "vertex");
     if (!vert) return false;
@@ -64,7 +61,7 @@ bool Shader::reload()
         std::string log(static_cast<size_t>(len > 1 ? len : 1), '\0');
         glGetProgramInfoLog(program, len, nullptr, log.data());
         m_lastError = "link error in " + m_pp.displayName(m_fragmentFile) + ":\n" + m_pp.prettifyLog(log, fsrc.files);
-        std::fprintf(stderr, "[shader] %s\n", m_lastError.c_str());
+        if (!m_quiet) std::fprintf(stderr, "[shader] %s\n", m_lastError.c_str());
         glDeleteProgram(program);
         return false;
     }
@@ -72,7 +69,7 @@ bool Shader::reload()
     if (m_program) glDeleteProgram(m_program);
     m_program = program;
     m_uniforms.clear();
-    std::printf("[shader] loaded %s\n", m_pp.displayName(m_fragmentFile).c_str());
+    if (!m_quiet) std::printf("[shader] loaded %s\n", m_pp.displayName(m_fragmentFile).c_str());
     return true;
 }
 
@@ -94,7 +91,7 @@ GLuint Shader::compileStage(GLenum type, const PreprocessedSource& src, const ch
         const fs::path& file = type == GL_VERTEX_SHADER ? m_vertexFile : m_fragmentFile;
         m_lastError = std::string(label) + " shader error in " + m_pp.displayName(file) + ":\n"
                     + m_pp.prettifyLog(log, src.files);
-        std::fprintf(stderr, "[shader] %s\n", m_lastError.c_str());
+        if (!m_quiet) std::fprintf(stderr, "[shader] %s\n", m_lastError.c_str());
         glDeleteShader(shader);
         return 0;
     }
@@ -170,5 +167,9 @@ void Shader::set(const std::string& name, const vec2& v)  { glUniform2f(uniform(
 void Shader::set(const std::string& name, const vec3& v)  { glUniform3f(uniform(name), v.x, v.y, v.z); }
 void Shader::set(const std::string& name, float x, float y, float z, float w) { glUniform4f(uniform(name), x, y, z, w); }
 void Shader::set(const std::string& name, const mat3& m)  { glUniformMatrix3fv(uniform(name), 1, GL_FALSE, m.data()); }
+void Shader::setVec4Array(const std::string& name, const float* values, int count)
+{
+    if (count > 0) glUniform4fv(uniform(name), count, values);
+}
 
 } // namespace satyr

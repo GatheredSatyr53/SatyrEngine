@@ -24,6 +24,8 @@ add_executable(satyr
     src/engine/Renderer.cpp
     src/engine/Image.cpp
     src/engine/SceneList.cpp
+    src/engine/Physics.cpp
+    src/engine/SdfProbe.cpp
 )
 
 target_include_directories(satyr PRIVATE src)

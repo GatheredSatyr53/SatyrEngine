@@ -13,6 +13,7 @@
 #include "common/camera.glsl"
 #include "common/sdf.glsl"
 #include "common/ops.glsl"
+#include "common/bodies.glsl"    // optional: physics balls (B to throw); remove with sdBodies below
 #include "common/lighting.glsl"
 
 out vec4 fragColor;
@@ -24,12 +25,13 @@ vec2 map(vec3 p)
 {
     vec2 ground = vec2(sdPlane(p, vec3(0.0, 1.0, 0.0), 0.0), MAT_GROUND);
     vec2 object = vec2(sdSphere(p - vec3(0.0, 1.0, 0.0), 1.0), MAT_OBJECT);
-    return opU(ground, object);
+    return opU(opU(ground, object), sdBodies(p));
 }
 
-vec3 material(int id, vec3 p)
+vec3 material(float mat, vec3 p)
 {
-    if (id == 0) return mix(vec3(0.25), vec3(0.7), checker(p.xz));
+    if (isBody(mat)) return bodyColor(bodyIndex(mat));
+    if (mat < 0.5) return mix(vec3(0.25), vec3(0.7), checker(p.xz));
     return vec3(0.9, 0.3, 0.2);
 }
 
@@ -46,7 +48,7 @@ void main()
     if (h.hit) {
         vec3 p = ro + rd * h.t;
         vec3 n = calcNormal(p);
-        col = shadeStandard(p, n, rd, material(int(h.mat + 0.5), p), sunDir, 32.0);
+        col = shadeStandard(p, n, rd, material(h.mat, p), sunDir, 32.0);
         col = applyFog(col, h.t, sky, 0.02);
     }
 

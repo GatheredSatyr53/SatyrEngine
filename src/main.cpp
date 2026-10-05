@@ -1,12 +1,15 @@
 // Satyr: a small OpenGL sandbox for raymarching experiments.
 //
 // The whole scene lives in a fragment shader (shaders/scenes/*.frag). The engine provides a
-// window, a fly camera, uniforms, #include support, hot reload and screenshots.
+// window, a fly camera, uniforms, #include support, hot reload, screenshots and a basic
+// sphere physics system that collides with the scene's distance field.
 
 #include "engine/Camera.h"
 #include "engine/Image.h"
+#include "engine/Physics.h"
 #include "engine/Renderer.h"
 #include "engine/SceneList.h"
+#include "engine/SdfProbe.h"
 #include "engine/Shader.h"
 #include "engine/ShaderPreprocessor.h"
 #include "engine/Window.h"
@@ -22,6 +25,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -36,11 +40,14 @@ struct Options {
     int height = 720;
     float scale = 1.0f;
     double startTime = 0.0;
+    double fixedDt = 0.0;           // >0: advance time by this much per frame instead of the clock
     int frames = -1;                // exit after this many frames (-1 = run until closed)
+    int spawn = 0;                  // balls dropped at start
     fs::path scene;
     fs::path shaderDir;
     fs::path screenshot;            // when set, saved on the last frame (or when --frames is given)
     bool vsync = true;
+    bool physics = true;
     bool help = false;
 };
 
@@ -55,8 +62,11 @@ void printUsage(const char* exe)
         "  -s, --scale F        render resolution scale (default 1.0)\n"
         "      --shaders DIR    shader root directory (default: ./shaders or the source tree)\n"
         "      --time T         initial scene time in seconds\n"
+        "      --dt S           fixed time step per frame (deterministic offline rendering)\n"
         "      --frames N       render N frames and exit (handy with --screenshot)\n"
         "      --screenshot F   save a PNG to F before exiting\n"
+        "      --spawn N        drop N physics balls at start\n"
+        "      --no-physics     disable the physics system\n"
         "      --no-vsync       disable vertical sync\n"
         "      --help           show this help\n",
         exe);
@@ -73,7 +83,8 @@ void printControls()
         "  Home                  reset camera\n"
         "  [ ]  or PgUp/PgDn     previous / next scene\n"
         "  R                     reload shaders (they also reload automatically on save)\n"
-        "  P / T                 pause / reset scene time\n"
+        "  P / T                 pause / reset scene time (physics pauses too)\n"
+        "  B / G / X             throw a ball / drop a handful / clear all balls\n"
         "  - / =                 lower / raise render resolution scale\n"
         "  F2 or F12             screenshot (saved into ./screenshots)\n"
         "  F11                   toggle fullscreen\n"
@@ -112,14 +123,22 @@ bool parseArgs(int argc, char** argv, Options& opt)
         } else if (a == "--time") {
             if (!(v = needValue(i, a.c_str()))) return false;
             opt.startTime = std::atof(v);
+        } else if (a == "--dt") {
+            if (!(v = needValue(i, a.c_str()))) return false;
+            opt.fixedDt = std::atof(v);
         } else if (a == "--frames") {
             if (!(v = needValue(i, a.c_str()))) return false;
             opt.frames = std::atoi(v);
+        } else if (a == "--spawn") {
+            if (!(v = needValue(i, a.c_str()))) return false;
+            opt.spawn = std::atoi(v);
         } else if (a == "--screenshot") {
             if (!(v = needValue(i, a.c_str()))) return false;
             opt.screenshot = v;
         } else if (a == "--no-vsync") {
             opt.vsync = false;
+        } else if (a == "--no-physics") {
+            opt.physics = false;
         } else if (!a.empty() && a[0] == '-') {
             std::fprintf(stderr, "unknown option: %s\n", a.c_str());
             return false;
@@ -127,8 +146,8 @@ bool parseArgs(int argc, char** argv, Options& opt)
             opt.scene = a;
         }
     }
-    if (opt.width <= 0 || opt.height <= 0 || opt.scale <= 0.0f) {
-        std::fprintf(stderr, "invalid window size or scale\n");
+    if (opt.width <= 0 || opt.height <= 0 || opt.scale <= 0.0f || opt.fixedDt < 0.0) {
+        std::fprintf(stderr, "invalid window size, scale or time step\n");
         return false;
     }
     return true;
@@ -245,14 +264,17 @@ SceneView parseSceneView(const std::vector<std::string>& directives)
 }
 
 // Resets the camera to the engine default, then applies the scene's "#pragma satyr camera".
-void applySceneView(const Shader& shader, Camera& camera)
+// Returns the point the camera looks at (used as the drop point for balls).
+vec3 applySceneView(const Shader& shader, Camera& camera)
 {
     camera.reset();
     const SceneView view = parseSceneView(shader.directives());
     if (view.hasPos) camera.position = view.pos;
-    camera.lookAt(view.hasTarget ? view.target : vec3(0.0f, 0.5f, 0.0f));
+    const vec3 target = view.hasTarget ? view.target : vec3(0.0f, 0.5f, 0.0f);
+    camera.lookAt(target);
     if (view.fov > 0.0f) camera.fov = radians(clamp(view.fov, 10.0f, 170.0f));
     if (view.speed > 0.0f) camera.moveSpeed = view.speed;
+    return target;
 }
 
 size_t nearestScaleIndex(float scale)
@@ -268,6 +290,125 @@ std::string formatScale(float s)
     char buf[16];
     std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(s));
     return buf;
+}
+
+// Everything the scene shaders read each frame (the physics probe gets the same values).
+struct FrameUniforms {
+    vec2 resolution;
+    float time = 0.0f;
+    float deltaTime = 0.0f;
+    int frame = 0;
+    float mouse[4] = {0, 0, 0, 0};
+    vec3 camPos;
+    mat3 camBasis;
+    float fov = 1.0f;
+};
+
+void uploadSceneUniforms(Shader& shader, const FrameUniforms& u)
+{
+    shader.set("uResolution", u.resolution);
+    shader.set("uTime", u.time);
+    shader.set("uDeltaTime", u.deltaTime);
+    shader.set("uFrame", u.frame);
+    shader.set("uMouse", u.mouse[0], u.mouse[1], u.mouse[2], u.mouse[3]);
+    shader.set("uCamPos", u.camPos);
+    shader.set("uCamBasis", u.camBasis);
+    shader.set("uCamFov", u.fov);
+}
+
+void uploadBodies(Shader& shader, const Physics& physics)
+{
+    static std::vector<float> packed;
+    const std::vector<Body>& bodies = physics.bodies();
+    packed.resize(bodies.size() * 4);
+    for (size_t i = 0; i < bodies.size(); ++i) {
+        packed[i * 4 + 0] = bodies[i].position.x;
+        packed[i * 4 + 1] = bodies[i].position.y;
+        packed[i * 4 + 2] = bodies[i].position.z;
+        packed[i * 4 + 3] = bodies[i].radius;
+    }
+    shader.set("uBodyCount", static_cast<int>(bodies.size()));
+    shader.setVec4Array("uBodies[0]", packed.data(), static_cast<int>(bodies.size()));
+    vec3 center;
+    float radius = 0.0f;
+    if (physics.boundingSphere(center, radius)) shader.set("uBodyBounds", center.x, center.y, center.z, radius);
+}
+
+class BallFactory {
+public:
+    BallFactory() : m_rng(1234u) {}
+
+    // Launches a ball from just in front of the camera along its view direction.
+    bool throwFrom(const Camera& camera, Physics& physics)
+    {
+        Body b;
+        b.radius = randomRadius();
+        b.position = camera.position + camera.forward() * (0.6f + b.radius);
+        b.velocity = camera.forward() * 12.0f;
+        b.mass = b.radius * b.radius * b.radius * 40.0f;
+        b.restitution = 0.55f;
+        return physics.add(b);
+    }
+
+    // Drops `count` balls in a loose cloud above `point`.
+    int dropAbove(const vec3& point, int count, Physics& physics)
+    {
+        std::uniform_real_distribution<float> spread(-1.5f, 1.5f);
+        std::uniform_real_distribution<float> lift(3.0f, 6.0f);
+        int added = 0;
+        for (int i = 0; i < count; ++i) {
+            Body b;
+            b.radius = randomRadius();
+            b.position = point + vec3(spread(m_rng), lift(m_rng), spread(m_rng));
+            b.velocity = vec3(0.0f, 0.0f, 0.0f);
+            b.mass = b.radius * b.radius * b.radius * 40.0f;
+            b.restitution = 0.5f;
+            if (!physics.add(b)) break;
+            ++added;
+        }
+        return added;
+    }
+
+private:
+    float randomRadius()
+    {
+        std::uniform_real_distribution<float> r(0.22f, 0.42f);
+        return r(m_rng);
+    }
+
+    std::mt19937 m_rng;
+};
+
+// First informative line of a shader error (skips the "error in file:" header).
+std::string errorSummary(const std::string& err)
+{
+    std::istringstream in(err);
+    std::string line, first;
+    while (std::getline(in, line)) {
+        const size_t start = line.find_first_not_of(" \t");
+        if (start == std::string::npos) continue;
+        line = line.substr(start);
+        if (first.empty()) first = line;
+        if (line.back() != ':') return line;
+    }
+    return first;
+}
+
+// Physics runs only when the probe compiled and the scene actually draws the bodies.
+// Reports the outcome once per (re)load.
+bool refreshPhysicsState(const SdfProbe& probe, Shader& shader, const ShaderPreprocessor& pp, const fs::path& scene)
+{
+    const std::string name = pp.displayName(scene);
+    if (!probe.valid()) {
+        std::printf("[physics] unavailable for %s: %s\n", name.c_str(), errorSummary(probe.lastError()).c_str());
+        return false;
+    }
+    if (shader.valid() && shader.uniform("uBodyCount") < 0) {
+        std::printf("[physics] unavailable for %s: scene does not use common/bodies.glsl\n", name.c_str());
+        return false;
+    }
+    std::printf("[physics] enabled for %s\n", name.c_str());
+    return true;
 }
 
 } // namespace
@@ -323,11 +464,26 @@ int main(int argc, char** argv)
     ShaderPreprocessor preprocessor(shaderDir);
     std::printf("[shader] root: %s\n", shaderDir.string().c_str());
 
+    const std::string prelude = "#define SATYR_ENGINE 1\n#define SATYR_MAX_BODIES " + std::to_string(kMaxBodies) + "\n";
+
     Shader shader(preprocessor);
+    shader.setPrelude(prelude);
     shader.load(vertexFile, scenes.current());
 
+    Physics physics;
+    BallFactory balls;
+    SdfProbe probe(preprocessor, kMaxBodies);
+    bool physicsEnabled = opt.physics;   // the system as a whole (--no-physics, probe init)
+    bool physicsActive = false;          // usable with the current scene
+    if (physicsEnabled && !probe.init()) physicsEnabled = false;
+    if (physicsEnabled) {
+        probe.load(vertexFile, scenes.current(), prelude);
+        physicsActive = refreshPhysicsState(probe, shader, preprocessor, scenes.current());
+    }
+
     Camera camera;
-    applySceneView(shader, camera);
+    vec3 sceneTarget = applySceneView(shader, camera);
+    if (physicsEnabled && opt.spawn > 0) balls.dropAbove(sceneTarget, opt.spawn, physics);
 
     printControls();
 
@@ -344,12 +500,16 @@ int main(int argc, char** argv)
     int titleFrames = 0;
     double titleTime = 0.0;
 
+    std::vector<SurfaceSample> field;
+    std::vector<vec3> bodyPositions;
+
     while (!window.shouldClose()) {
         window.pollEvents();
         const InputState& in = window.input();
 
         const double now = glfwGetTime();
-        const float dt = static_cast<float>(std::min(now - lastTime, 0.1));
+        const float dt = opt.fixedDt > 0.0 ? static_cast<float>(opt.fixedDt)
+                                           : static_cast<float>(std::min(now - lastTime, 0.1));
         lastTime = now;
 
         // ---- Input -------------------------------------------------------------------------------
@@ -361,10 +521,18 @@ int main(int argc, char** argv)
         const bool lookActive = captureToggled || in.mouse(GLFW_MOUSE_BUTTON_RIGHT);
         window.setCursorCaptured(lookActive);
 
-        if (in.pressed(GLFW_KEY_R)) shader.reload();
+        bool sceneChanged = false;
+        if (in.pressed(GLFW_KEY_R)) {
+            shader.reload();
+            if (physicsEnabled) {
+                probe.reload();
+                physicsActive = refreshPhysicsState(probe, shader, preprocessor, scenes.current());
+            }
+            shaderErrorShown = false;
+        }
         if (in.pressed(GLFW_KEY_P)) paused = !paused;
         if (in.pressed(GLFW_KEY_T)) { sceneTime = 0.0; frame = 0; }
-        if (in.pressed(GLFW_KEY_HOME)) applySceneView(shader, camera);
+        if (in.pressed(GLFW_KEY_HOME)) sceneTarget = applySceneView(shader, camera);
         if (in.pressed(GLFW_KEY_F1)) printControls();
         if (in.pressed(GLFW_KEY_F2) || in.pressed(GLFW_KEY_F12)) screenshotRequested = true;
         if (in.pressed(GLFW_KEY_F11)) window.toggleFullscreen();
@@ -375,8 +543,9 @@ int main(int argc, char** argv)
             if (in.pressed(GLFW_KEY_RIGHT_BRACKET) || in.pressed(GLFW_KEY_PAGE_DOWN)) scenes.next();
             else scenes.previous();
             shader.load(vertexFile, scenes.current());
-            applySceneView(shader, camera);
+            sceneTarget = applySceneView(shader, camera);
             shaderErrorShown = false;
+            sceneChanged = true;
         }
         if (in.pressed(GLFW_KEY_MINUS) || in.pressed(GLFW_KEY_EQUAL)) {
             size_t idx = nearestScaleIndex(renderScale);
@@ -386,36 +555,73 @@ int main(int argc, char** argv)
             std::printf("[renderer] render scale %s\n", formatScale(renderScale).c_str());
         }
 
+        if (physicsEnabled) {
+            if (sceneChanged) {
+                physics.clear();
+                probe.load(vertexFile, scenes.current(), prelude);
+                physicsActive = refreshPhysicsState(probe, shader, preprocessor, scenes.current());
+            }
+            if (physicsActive) {
+                if (in.pressed(GLFW_KEY_B) && !balls.throwFrom(camera, physics))
+                    std::printf("[physics] body limit (%d) reached\n", kMaxBodies);
+                if (in.pressed(GLFW_KEY_G)) balls.dropAbove(camera.position + camera.forward() * 4.0f, 8, physics);
+                if (in.pressed(GLFW_KEY_X)) physics.clear();
+            }
+        }
+
         camera.update(in, dt, lookActive);
         if (!paused) sceneTime += dt;
 
-        if (shader.pollHotReload(now)) shaderErrorShown = false;
+        if (shader.pollHotReload(now)) {
+            shaderErrorShown = false;
+            if (physicsEnabled) {
+                probe.reload();
+                physicsActive = refreshPhysicsState(probe, shader, preprocessor, scenes.current());
+            }
+        }
         if (!shader.valid() && !shaderErrorShown) {
             std::fprintf(stderr, "[shader] no valid program; fix the error above and save to retry\n");
             shaderErrorShown = true;
         }
 
-        // ---- Render ------------------------------------------------------------------------------
+        // ---- Frame uniforms ----------------------------------------------------------------------
         renderer.beginFrame(window.framebufferWidth(), window.framebufferHeight(), renderScale);
-        if (shader.valid()) {
+
+        FrameUniforms u;
+        {
             int winW = 1, winH = 1;
             glfwGetWindowSize(window.handle(), &winW, &winH);
             const float rw = static_cast<float>(renderer.renderWidth());
             const float rh = static_cast<float>(renderer.renderHeight());
-            const float mx = static_cast<float>(in.mouseX) * rw / static_cast<float>(std::max(winW, 1));
-            const float my = (static_cast<float>(winH) - static_cast<float>(in.mouseY)) * rh / static_cast<float>(std::max(winH, 1));
+            u.resolution = vec2(rw, rh);
+            u.time = static_cast<float>(sceneTime);
+            u.deltaTime = paused ? 0.0f : dt;
+            u.frame = frame;
+            u.mouse[0] = static_cast<float>(in.mouseX) * rw / static_cast<float>(std::max(winW, 1));
+            u.mouse[1] = (static_cast<float>(winH) - static_cast<float>(in.mouseY)) * rh / static_cast<float>(std::max(winH, 1));
+            u.mouse[2] = in.mouse(GLFW_MOUSE_BUTTON_LEFT) ? 1.0f : 0.0f;
+            u.mouse[3] = in.mouse(GLFW_MOUSE_BUTTON_RIGHT) ? 1.0f : 0.0f;
+            u.camPos = camera.position;
+            u.camBasis = camera.basis();
+            u.fov = camera.fov;
+        }
 
+        // ---- Physics -----------------------------------------------------------------------------
+        if (physicsActive) {
+            // Samples requested last frame describe the field at the bodies' current positions.
+            probe.fetch(field);
+            if (!paused) physics.step(dt, field);
+            physics.positions(bodyPositions);
+            probe.submit(bodyPositions, [&](Shader& s) { uploadSceneUniforms(s, u); });
+            // The probe rendered into its own framebuffer; restore this frame's target.
+            renderer.beginFrame(window.framebufferWidth(), window.framebufferHeight(), renderScale);
+        }
+
+        // ---- Render ------------------------------------------------------------------------------
+        if (shader.valid()) {
             shader.bind();
-            shader.set("uResolution", vec2(rw, rh));
-            shader.set("uTime", static_cast<float>(sceneTime));
-            shader.set("uDeltaTime", paused ? 0.0f : dt);
-            shader.set("uFrame", frame);
-            shader.set("uMouse", mx, my,
-                       in.mouse(GLFW_MOUSE_BUTTON_LEFT) ? 1.0f : 0.0f,
-                       in.mouse(GLFW_MOUSE_BUTTON_RIGHT) ? 1.0f : 0.0f);
-            shader.set("uCamPos", camera.position);
-            shader.set("uCamBasis", camera.basis());
-            shader.set("uCamFov", camera.fov);
+            uploadSceneUniforms(shader, u);
+            uploadBodies(shader, physics);
             renderer.drawFullscreen();
         } else {
             glClearColor(0.35f, 0.0f, 0.3f, 1.0f);
@@ -438,13 +644,13 @@ int main(int argc, char** argv)
         ++titleFrames;
         titleTime += dt;
         if (now - titleTimer >= 0.5) {
-            const double fps = titleFrames / std::max(titleTime, 1e-6);
-            const double ms = 1000.0 * titleTime / std::max(titleFrames, 1);
+            const double fps = titleFrames / std::max(now - titleTimer, 1e-6);
+            const double ms = 1000.0 * (now - titleTimer) / std::max(titleFrames, 1);
             char buf[512];
-            std::snprintf(buf, sizeof(buf), "Satyr | %s | %dx%d (x%s) | %.0f fps / %.1f ms | t=%.1fs%s%s",
+            std::snprintf(buf, sizeof(buf), "Satyr | %s | %dx%d (x%s) | %.0f fps / %.1f ms | t=%.1fs | %d bodies%s%s",
                           preprocessor.displayName(scenes.current()).c_str(),
                           renderer.renderWidth(), renderer.renderHeight(), formatScale(renderScale).c_str(),
-                          fps, ms, sceneTime,
+                          fps, ms, sceneTime, static_cast<int>(physics.size()),
                           paused ? " [paused]" : "",
                           shader.valid() ? "" : " | SHADER ERROR (see console)");
             window.setTitle(buf);
@@ -454,5 +660,10 @@ int main(int argc, char** argv)
         }
     }
 
+    if (physicsEnabled && !physics.empty()) {
+        float lowest = 1e9f;
+        for (const Body& b : physics.bodies()) lowest = std::min(lowest, b.position.y);
+        std::printf("[physics] %d bodies at exit, lowest centre y = %.3f\n", static_cast<int>(physics.size()), static_cast<double>(lowest));
+    }
     return 0;
 }

@@ -6,6 +6,7 @@
 #include "engine/gl.h"
 
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -14,10 +15,19 @@ namespace satyr {
 
 class Shader {
 public:
+    // Applied to the preprocessed fragment source before compilation (see SdfProbe).
+    using SourceTransform = std::function<void(PreprocessedSource&)>;
+
     explicit Shader(const ShaderPreprocessor& preprocessor);
     ~Shader();
     Shader(const Shader&) = delete;
     Shader& operator=(const Shader&) = delete;
+
+    // Text inserted after #version in both stages; takes effect on the next load()/reload().
+    void setPrelude(std::string prelude) { m_prelude = std::move(prelude); }
+    void setFragmentTransform(SourceTransform transform) { m_transform = std::move(transform); }
+    // Quiet shaders only record errors in lastError() instead of printing them.
+    void setQuiet(bool quiet) { m_quiet = quiet; }
 
     // Compiles and links. On failure the previous program (if any) is kept and lastError() is set.
     bool load(const std::filesystem::path& vertexFile, const std::filesystem::path& fragmentFile);
@@ -43,6 +53,8 @@ public:
     void set(const std::string& name, const vec3& v);
     void set(const std::string& name, float x, float y, float z, float w);
     void set(const std::string& name, const mat3& m);
+    // vec4 array: `values` holds 4 * count floats; name the first element, e.g. "uBodies[0]".
+    void setVec4Array(const std::string& name, const float* values, int count);
 
 private:
     struct Dependency {
@@ -55,6 +67,9 @@ private:
     static std::filesystem::file_time_type mtimeOf(const std::filesystem::path& p);
 
     const ShaderPreprocessor& m_pp;
+    std::string m_prelude = "#define SATYR_ENGINE 1\n";
+    SourceTransform m_transform;
+    bool m_quiet = false;
     std::filesystem::path m_vertexFile;
     std::filesystem::path m_fragmentFile;
     GLuint m_program = 0;
