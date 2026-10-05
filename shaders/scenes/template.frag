@@ -10,11 +10,11 @@
 
 #pragma satyr camera pos=0,1.5,5 target=0,0.5,0 fov=60 speed=3
 
-#include "common/camera.glsl"
-#include "common/sdf.glsl"
-#include "common/ops.glsl"
-#include "common/bodies.glsl"    // optional: physics balls (B to throw); remove with sdBodies below
-#include "common/lighting.glsl"
+#include "common/camera.glsl" //! #include "../common/camera.glsl"
+#include "common/sdf.glsl"  //! #include "../common/sdf.glsl"
+#include "common/ops.glsl" //! #include "../common/ops.glsl"
+#include "common/bodies.glsl" //! #include "../common/bodies.glsl"
+#include "common/lighting.glsl" //! #include "../common/lighting.glsl"
 
 out vec4 fragColor;
 

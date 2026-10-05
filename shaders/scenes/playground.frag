@@ -1,14 +1,14 @@
 #version 330 core
-// Physics playground: throw balls (B), drop a handful (G), clear them (X).
+// Basic physics playground: throw balls (B), drop a handful (G), clear them (X).
 // Ramps, stairs, a bowl and a spinning bar to bounce off. Hold LMB for the step heatmap.
 
 #pragma satyr camera pos=0,3.5,10 target=0,1,0 speed=5
 
-#include "common/camera.glsl"
-#include "common/sdf.glsl"
-#include "common/ops.glsl"
-#include "common/bodies.glsl"
-#include "common/lighting.glsl"
+#include "common/camera.glsl" //! #include "../common/camera.glsl"
+#include "common/sdf.glsl"  //! #include "../common/sdf.glsl"
+#include "common/ops.glsl" //! #include "../common/ops.glsl"
+#include "common/bodies.glsl" //! #include "../common/bodies.glsl"
+#include "common/lighting.glsl" //! #include "../common/lighting.glsl"
 
 out vec4 fragColor;
 

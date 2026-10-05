@@ -12,9 +12,9 @@
 
 #pragma satyr camera pos=0,0.9,2.9 target=0,0,0 speed=1
 
-#include "common/camera.glsl"
-#include "common/ops.glsl"
-#include "common/lighting.glsl"
+#include "common/camera.glsl" //! #include "../common/camera.glsl"
+#include "common/ops.glsl" //! #include "../common/ops.glsl"
+#include "common/lighting.glsl" //! #include "../common/lighting.glsl"
 
 out vec4 fragColor;
 

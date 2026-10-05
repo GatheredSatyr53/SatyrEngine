@@ -25,6 +25,8 @@
 #define NORMAL_EPS 0.0005
 #endif
 
+#define ANTIALIASING
+
 vec2 map(vec3 p); // provided by the scene
 
 struct Hit {
@@ -33,6 +35,49 @@ struct Hit {
     int   steps;  // iterations used (handy for debugging / cost heatmaps)
     bool  hit;
 };
+
+// px Ч радиус пиксел€ на единичном рассто€нии; px = 0.0 отключает AA
+Hit rayMarchAA(vec3 ro, vec3 rd, float px, out Edge edges[AA_LAYERS], out int edgeCount)
+{
+    Hit h;
+    h.t = 0.0;
+    h.mat = -1.0;
+    h.steps = 0;
+    h.hit = false;
+
+    edgeCount = 0;
+    vec2  od = vec2(0.0);   // map() на предыдущем шаге
+    float ot = 0.0;         // t на предыдущем шаге
+    float cover = 0.0;      // накопленное покрытие
+
+    for (int i = 0; i < MAX_STEPS; ++i) {
+        vec2 d = map(ro + rd * h.t);
+        h.steps = i + 1;
+
+        float th1 = max(SURF_EPS, px * h.t);   // порог попадани€ = радиус пиксел€
+        if (d.x < th1) {
+            h.hit = true;
+            h.mat = d.y;
+            return h;
+        }
+
+        float th2 = px * h.t * AA_WIDTH;
+        if (d.x < th2 && d.x > od.x && edgeCount < AA_LAYERS) {
+            float a = clamp(1.0 - (d.x - th1) / (th2 - th1), 0.0, 1.0) * (1.0 - cover);
+            edges[edgeCount] = Edge(ot, od.y, a);
+            ++edgeCount;
+            cover += a;
+            if (cover > 0.99) break;
+        }
+
+        od = d;
+        ot = h.t;
+        h.t += d.x * STEP_SCALE;
+        if (h.t > MAX_DIST) break;
+    }
+    h.t = MAX_DIST;
+    return h;
+}
 
 Hit rayMarch(vec3 ro, vec3 rd)
 {

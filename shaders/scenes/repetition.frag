@@ -5,17 +5,18 @@
 // per cell (hashed height, size and colour); for those the four nearest cells are evaluated
 // so the distance field stays correct near cell borders.
 
+// Do not move
 #define MAX_DIST 150.0
 #define STEP_SCALE 0.9
 
 #pragma satyr camera pos=0,1.6,6 target=0,1.1,0 speed=4
 
-#include "common/camera.glsl"
-#include "common/sdf.glsl"
-#include "common/ops.glsl"
-#include "common/noise.glsl"
-#include "common/bodies.glsl"
-#include "common/lighting.glsl"
+#include "common/camera.glsl" //! #include "../common/camera.glsl"
+#include "common/sdf.glsl"  //! #include "../common/sdf.glsl"
+#include "common/ops.glsl" //! #include "../common/ops.glsl"
+#include "common/noise.glsl" //! #include "../common/noise.glsl"
+#include "common/bodies.glsl" //! #include "../common/bodies.glsl"
+#include "common/lighting.glsl" //! #include "../common/lighting.glsl"
 
 out vec4 fragColor;
 
