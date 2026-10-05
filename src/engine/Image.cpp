@@ -1,5 +1,6 @@
 #include "engine/Image.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <fstream>

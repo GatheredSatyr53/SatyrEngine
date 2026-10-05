@@ -192,8 +192,9 @@ std::string ShaderPreprocessor::displayName(const fs::path& file) const
 {
     std::error_code ec;
     const fs::path rel = fs::relative(file, m_root, ec);
-    if (ec || rel.empty() || rel.native().rfind("..", 0) == 0) return file.generic_string();
-    return rel.generic_string();
+    const std::string relStr = ec ? std::string{} : rel.generic_string();
+    if (relStr.empty() || relStr.rfind("..", 0) == 0) return file.generic_string();
+    return relStr;
 }
 
 } // namespace satyr
