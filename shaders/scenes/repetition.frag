@@ -17,6 +17,7 @@
 #include "common/noise.glsl" //! #include "../common/noise.glsl"
 #include "common/bodies.glsl" //! #include "../common/bodies.glsl"
 #include "common/lighting.glsl" //! #include "../common/lighting.glsl"
+#include "common/aa.glsl" //! #include "../common/aa.glsl"
 
 out vec4 fragColor;
 
@@ -78,44 +79,54 @@ vec3 palette(float t)
     return 0.5 + 0.5 * cos(6.2831 * (t + vec3(0.0, 0.33, 0.67)));
 }
 
+const vec3 FOG = vec3(0.05, 0.06, 0.09);
+
+vec3 sunDir() { return normalize(vec3(0.4, 0.5, 0.7)); }
+
+vec3 shadeMiss(vec3 ro, vec3 rd)
+{
+    return FOG;
+}
+
+vec3 shadeHit(vec3 ro, vec3 rd, float t, float mat)
+{
+    vec3 p = ro + rd * t;
+    vec3 n = calcNormal(p);
+    vec3 col;
+
+    if (isBody(mat)) {
+        col = shadeStandard(p, n, rd, bodyColor(bodyIndex(mat)), sunDir(), 48.0) * 0.6;
+    } else if (mat >= MAT_ORB) {
+        // Emissive orb: colour from the cell hash, brighter at grazing angles.
+        vec3 c = palette(mat - MAT_ORB);
+        float rim = pow(1.0 - max(dot(n, -rd), 0.0), 2.0);
+        col = c * (0.6 + 1.5 * rim);
+    } else {
+        vec3 albedo = mat < 0.5
+            ? mix(vec3(0.12), vec3(0.3), checker(p.xz * 0.5))
+            : vec3(0.55, 0.5, 0.45);
+        col = shadeStandard(p, n, rd, albedo, sunDir(), 24.0) * 0.45;
+
+        // Each cell's orb lights its surroundings (same cell offset as in map()).
+        vec2 id = round((p.xz + 0.5 * CELL) / CELL);
+        float hh = hash21(id);
+        vec3 orbPos = vec3(CELL * id.x - 0.5 * CELL, orbHeight(hh), CELL * id.y - 0.5 * CELL);
+        vec3 toOrb = orbPos - p;
+        float dist2 = dot(toOrb, toOrb);
+        float lit = max(dot(n, toOrb * inversesqrt(dist2)), 0.0) / (1.0 + 0.25 * dist2);
+        col += albedo * palette(hh) * lit * 2.5;
+    }
+    return applyFog(col, t, FOG, 0.035);
+}
+
 void main()
 {
     vec3 ro = uCamPos;
     vec3 rd = cameraRay(gl_FragCoord.xy);
-    vec3 sunDir = normalize(vec3(0.4, 0.5, 0.7));
 
-    vec3 fog = vec3(0.05, 0.06, 0.09);
-    vec3 col = fog;
-
-    Hit h = rayMarch(ro, rd);
-    if (h.hit) {
-        vec3 p = ro + rd * h.t;
-        vec3 n = calcNormal(p);
-
-        if (isBody(h.mat)) {
-            col = shadeStandard(p, n, rd, bodyColor(bodyIndex(h.mat)), sunDir, 48.0) * 0.6;
-        } else if (h.mat >= MAT_ORB) {
-            // Emissive orb: colour from the cell hash, brighter at grazing angles.
-            vec3 c = palette(h.mat - MAT_ORB);
-            float rim = pow(1.0 - max(dot(n, -rd), 0.0), 2.0);
-            col = c * (0.6 + 1.5 * rim);
-        } else {
-            vec3 albedo = h.mat < 0.5
-                ? mix(vec3(0.12), vec3(0.3), checker(p.xz * 0.5))
-                : vec3(0.55, 0.5, 0.45);
-            col = shadeStandard(p, n, rd, albedo, sunDir, 24.0) * 0.45;
-
-            // Each cell's orb lights its surroundings (same cell offset as in map()).
-            vec2 id = round((p.xz + 0.5 * CELL) / CELL);
-            float hh = hash21(id);
-            vec3 orbPos = vec3(CELL * id.x - 0.5 * CELL, orbHeight(hh), CELL * id.y - 0.5 * CELL);
-            vec3 toOrb = orbPos - p;
-            float dist2 = dot(toOrb, toOrb);
-            float lit = max(dot(n, toOrb * inversesqrt(dist2)), 0.0) / (1.0 + 0.25 * dist2);
-            col += albedo * palette(hh) * lit * 2.5;
-        }
-        col = applyFog(col, h.t, fog, 0.035);
-    }
+    int steps;
+    vec3 col = renderAA(ro, rd, pixelRadius(), steps);
+    if (uMouse.z > 0.5) col = stepHeatmap(steps, MAX_STEPS);
 
     fragColor = vec4(toGamma(tonemapReinhard(col)), 1.0);
 }

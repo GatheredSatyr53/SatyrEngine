@@ -15,6 +15,7 @@
 #include "common/ops.glsl" //! #include "../common/ops.glsl"
 #include "common/bodies.glsl" //! #include "../common/bodies.glsl"
 #include "common/lighting.glsl" //! #include "../common/lighting.glsl"
+#include "common/aa.glsl" //! #include "../common/aa.glsl"
 
 out vec4 fragColor;
 
@@ -35,22 +36,29 @@ vec3 material(float mat, vec3 p)
     return vec3(0.9, 0.3, 0.2);
 }
 
+vec3 sunDir() { return normalize(vec3(0.6, 0.7, 0.4)); }
+
+vec3 shadeMiss(vec3 ro, vec3 rd)
+{
+    return skyColor(rd, sunDir());
+}
+
+vec3 shadeHit(vec3 ro, vec3 rd, float t, float mat)
+{
+    vec3 p = ro + rd * t;
+    vec3 n = calcNormal(p);
+    vec3 col = shadeStandard(p, n, rd, material(mat, p), sunDir(), 32.0);
+    return applyFog(col, t, shadeMiss(ro, rd), 0.02);
+}
+
 void main()
 {
     vec3 ro = uCamPos;
     vec3 rd = cameraRay(gl_FragCoord.xy);
-    vec3 sunDir = normalize(vec3(0.6, 0.7, 0.4));
 
-    vec3 sky = skyColor(rd, sunDir);
-    vec3 col = sky;
-
-    Hit h = rayMarch(ro, rd);
-    if (h.hit) {
-        vec3 p = ro + rd * h.t;
-        vec3 n = calcNormal(p);
-        col = shadeStandard(p, n, rd, material(h.mat, p), sunDir, 32.0);
-        col = applyFog(col, h.t, sky, 0.02);
-    }
+    // Cone-traced anti-aliasing of silhouettes; pass 0.0 instead of pixelRadius() to disable.
+    int steps;
+    vec3 col = renderAA(ro, rd, pixelRadius(), steps);
 
     fragColor = vec4(toGamma(tonemapReinhard(col)), 1.0);
 }

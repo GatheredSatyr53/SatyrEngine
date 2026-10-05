@@ -25,8 +25,6 @@
 #define NORMAL_EPS 0.0005
 #endif
 
-#define ANTIALIASING
-
 vec2 map(vec3 p); // provided by the scene
 
 struct Hit {
@@ -36,7 +34,57 @@ struct Hit {
     bool  hit;
 };
 
-// px Ч радиус пиксел€ на единичном рассто€нии; px = 0.0 отключает AA
+// ---- Cone-traced anti-aliasing ---------------------------------------------------------------
+// rayMarchAA() treats the ray as a cone of radius px * t, where px is the radius of one pixel at
+// unit distance (pixelRadius()). A surface closer than AA_HIT pixel radii counts as a hit. A
+// surface the ray only passes, within AA_WIDTH pixel radii at the closest approach, is recorded
+// as an Edge with an estimated coverage so the scene can blend its colour over what lies behind
+// (see aa.glsl / renderAA()). With px = 0.0 the function behaves exactly like rayMarch().
+//
+// Coverage is a linear ramp from 1 at AA_HIT radii to 0 at AA_WIDTH radii. Hits always count as
+// full coverage, so silhouettes come out somewhat fatter than they are: with the defaults about
+// half a pixel per side, and thin geometry gains roughly a third of its width. A wider band is
+// smoother but bolder (AA_HIT 1.0 / AA_WIDTH 3.0 roughly doubles the width of 2-pixel features);
+// AA_HIT = 1.0 is the classic pixel-size epsilon that stops the march earliest.
+#ifndef AA_LAYERS
+#define AA_LAYERS 4        // near-miss surfaces remembered per ray
+#endif
+#ifndef AA_HIT
+#define AA_HIT 0.5         // hit radius in pixel radii
+#endif
+#ifndef AA_WIDTH
+#define AA_WIDTH 1.5       // outer edge of the coverage band in pixel radii (> AA_HIT)
+#endif
+
+struct Edge {
+    float t;    // closest approach along the ray
+    float mat;  // material of the surface passed
+    float a;    // coverage, already attenuated by the layers in front (sum over layers <= 1)
+};
+
+// Radius of one pixel at unit distance for the engine camera.
+float pixelRadius()
+{
+    return tan(0.5 * uCamFov) / uResolution.y;
+}
+
+// Refines the closest approach from three consecutive samples (d1 > d2 < d3) by fitting a
+// parabola through them; sphere tracing alone only knows dmin to within one step.
+void refineClosest(float t1, float d1, float t2, float d2, float t3, float d3, out float tMin, out float dMin)
+{
+    tMin = t2;
+    dMin = d2;
+    float a = t1 - t2; // < 0
+    float b = t3 - t2; // > 0
+    if (a > -1e-7 || b < 1e-7) return;
+    float A = ((d3 - d2) - (b / a) * (d1 - d2)) / (b * (b - a));
+    if (A <= 0.0) return;
+    float B = (d1 - d2 - A * a * a) / a;
+    float x = clamp(-B / (2.0 * A), a, b);
+    tMin = t2 + x;
+    dMin = clamp(A * x * x + B * x + d2, 0.0, d2);
+}
+
 Hit rayMarchAA(vec3 ro, vec3 rd, float px, out Edge edges[AA_LAYERS], out int edgeCount)
 {
     Hit h;
@@ -46,32 +94,41 @@ Hit rayMarchAA(vec3 ro, vec3 rd, float px, out Edge edges[AA_LAYERS], out int ed
     h.hit = false;
 
     edgeCount = 0;
-    vec2  od = vec2(0.0);   // map() на предыдущем шаге
-    float ot = 0.0;         // t на предыдущем шаге
-    float cover = 0.0;      // накопленное покрытие
+    float cover = 0.0;
+    // Last two samples (t, distance, material) and whether the distance was shrinking.
+    float t1 = 0.0, d1 = 1e10;
+    float t2 = 0.0, d2 = 1e10, m2 = -1.0;
+    bool descending = false;
 
     for (int i = 0; i < MAX_STEPS; ++i) {
         vec2 d = map(ro + rd * h.t);
         h.steps = i + 1;
 
-        float th1 = max(SURF_EPS, px * h.t);   // порог попадани€ = радиус пиксел€
-        if (d.x < th1) {
+        if (d.x < max(SURF_EPS, AA_HIT * px * h.t)) {
             h.hit = true;
             h.mat = d.y;
             return h;
         }
 
-        float th2 = px * h.t * AA_WIDTH;
-        if (d.x < th2 && d.x > od.x && edgeCount < AA_LAYERS) {
-            float a = clamp(1.0 - (d.x - th1) / (th2 - th1), 0.0, 1.0) * (1.0 - cover);
-            edges[edgeCount] = Edge(ot, od.y, a);
-            ++edgeCount;
-            cover += a;
-            if (cover > 0.99) break;
+        if (d.x < d2) {
+            descending = true;
+        } else if (descending) {
+            // The previous sample was a local minimum: the ray just passed a surface.
+            descending = false;
+            float tMin, dMin;
+            refineClosest(t1, d1, t2, d2, h.t, d.x, tMin, dMin);
+            float r = px * tMin;
+            if (dMin < AA_WIDTH * r && edgeCount < AA_LAYERS) {
+                float a = clamp((AA_WIDTH * r - dMin) / ((AA_WIDTH - AA_HIT) * r), 0.0, 1.0) * (1.0 - cover);
+                edges[edgeCount] = Edge(tMin, m2, a);
+                ++edgeCount;
+                cover += a;
+                if (cover > 0.99) break;
+            }
         }
 
-        od = d;
-        ot = h.t;
+        t1 = t2; d1 = d2;
+        t2 = h.t; d2 = d.x; m2 = d.y;
         h.t += d.x * STEP_SCALE;
         if (h.t > MAX_DIST) break;
     }

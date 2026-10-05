@@ -496,6 +496,7 @@ int main(int argc, char** argv)
     bool shaderErrorShown = false;
 
     double lastTime = glfwGetTime();
+    const double runStart = lastTime;
     double titleTimer = lastTime;
     int titleFrames = 0;
     double titleTime = 0.0;
@@ -660,6 +661,10 @@ int main(int argc, char** argv)
         }
     }
 
+    if (frame > 0) {
+        const double elapsed = glfwGetTime() - runStart;
+        std::printf("[stats] %d frames in %.2f s, %.2f ms/frame average\n", frame, elapsed, 1000.0 * elapsed / frame);
+    }
     if (physicsEnabled && !physics.empty()) {
         float lowest = 1e9f;
         for (const Body& b : physics.bodies()) lowest = std::min(lowest, b.position.y);

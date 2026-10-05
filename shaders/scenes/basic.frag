@@ -9,6 +9,7 @@
 #include "common/ops.glsl" //! #include "../common/ops.glsl"
 #include "common/bodies.glsl" //! #include "../common/bodies.glsl"
 #include "common/lighting.glsl" //! #include "../common/lighting.glsl"
+#include "common/aa.glsl" //! #include "../common/aa.glsl"
 
 out vec4 fragColor;
 
@@ -87,25 +88,30 @@ vec3 material(float mat, vec3 p)
     return vec3(0.6, 0.3, 0.75);
 }
 
+vec3 sunDir() { return normalize(vec3(0.8, 0.6, 0.4)); }
+
+vec3 shadeMiss(vec3 ro, vec3 rd)
+{
+    return skyColor(rd, sunDir());
+}
+
+vec3 shadeHit(vec3 ro, vec3 rd, float t, float mat)
+{
+    vec3 p = ro + rd * t;
+    vec3 n = calcNormal(p);
+    int id = int(mat + 0.5);
+    vec3 col = shadeStandard(p, n, rd, material(mat, p), sunDir(), id == 3 ? 128.0 : 32.0);
+    return applyFog(col, t, shadeMiss(ro, rd), 0.015);
+}
+
 void main()
 {
     vec3 ro = uCamPos;
     vec3 rd = cameraRay(gl_FragCoord.xy);
-    vec3 sunDir = normalize(vec3(0.8, 0.6, 0.4));
 
-    vec3 sky = skyColor(rd, sunDir);
-    vec3 col = sky;
-
-    Hit h = rayMarch(ro, rd);
-    if (h.hit) {
-        vec3 p = ro + rd * h.t;
-        vec3 n = calcNormal(p);
-        int id = int(h.mat + 0.5);
-        col = shadeStandard(p, n, rd, material(h.mat, p), sunDir, id == 3 ? 128.0 : 32.0);
-        col = applyFog(col, h.t, sky, 0.015);
-    }
-
-    if (uMouse.z > 0.5) col = stepHeatmap(h.steps, MAX_STEPS);
+    int steps;
+    vec3 col = renderAA(ro, rd, pixelRadius(), steps);
+    if (uMouse.z > 0.5) col = stepHeatmap(steps, MAX_STEPS);
 
     fragColor = vec4(tonemapFilmic(col), 1.0);
 }
