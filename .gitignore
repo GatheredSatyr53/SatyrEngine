@@ -1,0 +1,18 @@
+# Build
+build/
+build-*/
+cmake-build-*/
+out/
+_deps/
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.swp
+
+# Runtime output
+screenshots/
