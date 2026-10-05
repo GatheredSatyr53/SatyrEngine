@@ -34,3 +34,28 @@ vec3 basisRay(vec2 fragCoord, mat3 basis, float fov)
     float focal = 1.0 / tan(0.5 * fov);
     return normalize(basis * vec3(uv, focal));
 }
+
+// Radius of one pixel at unit distance for the engine camera. While frames are accumulated the
+// engine shrinks it (uPxScale) so the cone AA stops fattening silhouettes and jitter takes over.
+float pixelRadius()
+{
+    return tan(0.5 * uCamFov) / uResolution.y * uPxScale;
+}
+
+// How far the hit point p (with surface normal n) moves for the pixel to the right (ddx) and
+// above (ddy): the neighbouring pixels' rays intersected with the tangent plane at p. Exact for
+// planes and good enough elsewhere; unlike dFdx() it stays valid across silhouettes. Use it to
+// filter textures by the pixel footprint (see checkerFiltered()).
+void surfaceFootprint(vec3 ro, vec2 fragCoord, vec3 p, vec3 n, out vec3 ddx, out vec3 ddy)
+{
+    vec3 rdx = cameraRay(fragCoord + vec2(1.0, 0.0));
+    vec3 rdy = cameraRay(fragCoord + vec2(0.0, 1.0));
+    float planeDist = dot(p - ro, n);
+    float tx = planeDist / dot(rdx, n);
+    float ty = planeDist / dot(rdy, n);
+    // A neighbouring ray that never reaches the plane means a grazing view: use a huge footprint.
+    if (!(tx > 0.0)) tx = 1e4;
+    if (!(ty > 0.0)) ty = 1e4;
+    ddx = ro + rdx * tx - p;
+    ddy = ro + rdy * ty - p;
+}

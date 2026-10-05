@@ -148,7 +148,14 @@ void main()
 сошедшийся кадр из N сэмплов из командной строки. Сцены со случайностью по `uFrame` (например, path
 tracing) на паузе усредняются как Монте-Карло: `uAccumFrame` даёт номер сэмпла для зерна.
 
-Сглаживаются только силуэты геометрии: муар текстур, границы теней и блики метод не трогает. Попадания
+Текстуры сглаживаются отдельно, фильтрацией по следу пикселя: `surfaceFootprint()` пересекает лучи соседних
+пикселей с касательной плоскостью в точке попадания и даёт `ddx`/`ddy`, а `checkerFiltered()` и
+`gridLinesFiltered()` усредняют узор по этому следу аналитически, так что шахматка вдали уходит в ровный
+серый вместо муара и в движении тоже. В `rayMarchAA` стоит проверка правдоподобия по Липшицу: расстояние
+не может вырасти быстрее, чем прошёл луч, иначе это разрыв поля (например, ранний выход по ограничивающей
+сфере в `sdBodies`), а не поверхность, и такой «промах» не записывается.
+
+Сглаживаются только силуэты геометрии: границы теней и блики метод не трогает. Попадания
 всегда дают полное покрытие, поэтому силуэты выходят чуть толще: с настройками по умолчанию примерно на
 полпикселя с каждой стороны, тонкие объекты шириной в пару пикселей становятся жирнее примерно на треть.
 Широкая полоса (`AA_HIT 1.0`, `AA_WIDTH 3.0`) сглаживает мягче, но удваивает ширину таких объектов.
@@ -208,12 +215,12 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) { ... }
 | Файл | Содержимое |
 |---|---|
 | `uniforms.glsl` | Объявления uniform'ов |
-| `camera.glsl` | `cameraRay()`, `lookAtBasis()`, `basisRay()` для скриптовых камер |
+| `camera.glsl` | `cameraRay()`, `lookAtBasis()`, `basisRay()` для скриптовых камер, `pixelRadius()`, `surfaceFootprint()` |
 | `sdf.glsl` | Сфера, бокс, тор, цилиндр, капсула, конус, октаэдр, призма, эллипсоид, звено цепи… |
 | `ops.glsl` | union/subtract/intersect и их smooth-версии, варианты с материалом (`opU`), `opRepeat`, `opSymX`, `rotX/Y/Z`, `opTwist`, `opBend`, `opOnion`, `opRound` |
-| `raymarch.glsl` | `rayMarch()`, `rayMarchAA()`, `pixelRadius()`, `calcNormal()`, `softShadow()`, `calcAO()` |
+| `raymarch.glsl` | `rayMarch()`, `rayMarchAA()`, `calcNormal()`, `softShadow()`, `calcAO()` |
 | `aa.glsl` | `renderAA()`: сглаженный рендер через `shadeHit()`/`shadeMiss()` сцены |
-| `lighting.glsl` | `shadeStandard()`, `skyColor()`, `applyFog()`, `checker()`, тонмаппинг, `stepHeatmap()` |
+| `lighting.glsl` | `shadeStandard()`, `skyColor()`, `applyFog()`, `checker()`, `checkerFiltered()`, `gridLinesFiltered()`, тонмаппинг, `stepHeatmap()` |
 | `noise.glsl` | Хеши, value noise 2D/3D, `fbm()` |
 | `bodies.glsl` | `sdBodies()`, `isBody()`, `bodyIndex()`, `bodyColor()` для физических шаров |
 | `shadertoy.glsl` | Слой совместимости с Shadertoy |

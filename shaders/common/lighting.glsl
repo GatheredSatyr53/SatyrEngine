@@ -42,11 +42,33 @@ vec3 applyFog(vec3 col, float t, vec3 fogColor, float density)
     return mix(fogColor, col, exp(-density * t));
 }
 
-// 0/1 checkerboard on a 2D plane with 1-unit squares.
+// 0/1 checkerboard on a 2D plane with 1-unit squares. Aliases in the distance; prefer
+// checkerFiltered() with the pixel footprint from surfaceFootprint().
 float checker(vec2 p)
 {
     vec2 q = floor(p);
     return mod(q.x + q.y, 2.0);
+}
+
+// Box-filtered checkerboard (Inigo Quilez): the exact average of checker() over the pixel's
+// footprint on the plane, spanned by ddx and ddy. Fades to 0.5 where squares get smaller than
+// a pixel instead of producing moire.
+float checkerFiltered(vec2 p, vec2 ddx, vec2 ddy)
+{
+    vec2 w = max(abs(ddx), abs(ddy)) + 0.0001;
+    vec2 i = 2.0 * (abs(fract((p - 0.5 * w) * 0.5) - 0.5) - abs(fract((p + 0.5 * w) * 0.5) - 0.5)) / w;
+    return 0.5 - 0.5 * i.x * i.y;
+}
+
+// Grid lines on integer coordinates, `halfWidth` wide on each side, filtered by the pixel
+// footprint: the edge softens by one footprint and the intensity drops to the fraction of the
+// pixel a line actually covers, so distant grids fade instead of sparkling.
+float gridLinesFiltered(vec2 p, float halfWidth, vec2 ddx, vec2 ddy)
+{
+    vec2 w = max(abs(ddx), abs(ddy)) + 1e-5;
+    vec2 g = abs(fract(p + 0.5) - 0.5);
+    vec2 line = (1.0 - smoothstep(vec2(halfWidth), vec2(halfWidth) + w, g)) * min(vec2(1.0), 2.0 * halfWidth / w);
+    return max(line.x, line.y);
 }
 
 vec3 tonemapReinhard(vec3 c) { return c / (1.0 + c); }

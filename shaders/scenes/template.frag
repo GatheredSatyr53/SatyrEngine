@@ -29,10 +29,11 @@ vec2 map(vec3 p)
     return opU(opU(ground, object), sdBodies(p));
 }
 
-vec3 material(float mat, vec3 p)
+// ddx/ddy: how far p moves per pixel (surfaceFootprint), used to filter textures in the distance.
+vec3 material(float mat, vec3 p, vec3 ddx, vec3 ddy)
 {
     if (isBody(mat)) return bodyColor(bodyIndex(mat));
-    if (mat < 0.5) return mix(vec3(0.25), vec3(0.7), checker(p.xz));
+    if (mat < 0.5) return mix(vec3(0.25), vec3(0.7), checkerFiltered(p.xz, ddx.xz, ddy.xz));
     return vec3(0.9, 0.3, 0.2);
 }
 
@@ -47,7 +48,9 @@ vec3 shadeHit(vec3 ro, vec3 rd, float t, float mat)
 {
     vec3 p = ro + rd * t;
     vec3 n = calcNormal(p);
-    vec3 col = shadeStandard(p, n, rd, material(mat, p), sunDir(), 32.0);
+    vec3 ddx, ddy;
+    surfaceFootprint(ro, gl_FragCoord.xy, p, n, ddx, ddy);
+    vec3 col = shadeStandard(p, n, rd, material(mat, p, ddx, ddy), sunDir(), 32.0);
     return applyFog(col, t, shadeMiss(ro, rd), 0.02);
 }
 

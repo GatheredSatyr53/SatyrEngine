@@ -7,7 +7,7 @@
 //   SURF_EPS    hit threshold                              (default 0.001)
 //   STEP_SCALE  step multiplier, <1 for non-Lipschitz fields (default 1.0)
 #pragma once
-#include "uniforms.glsl"
+#include "camera.glsl"
 
 #ifndef MAX_STEPS
 #define MAX_STEPS 256
@@ -62,13 +62,6 @@ struct Edge {
     float a;    // coverage, already attenuated by the layers in front (sum over layers <= 1)
 };
 
-// Radius of one pixel at unit distance for the engine camera. While frames are accumulated the
-// engine shrinks it (uPxScale) so the cone AA stops fattening silhouettes and jitter takes over.
-float pixelRadius()
-{
-    return tan(0.5 * uCamFov) / uResolution.y * uPxScale;
-}
-
 // Refines the closest approach from three consecutive samples (d1 > d2 < d3) by fitting a
 // parabola through them; sphere tracing alone only knows dmin to within one step.
 void refineClosest(float t1, float d1, float t2, float d2, float t3, float d3, out float tMin, out float dMin)
@@ -114,12 +107,17 @@ Hit rayMarchAA(vec3 ro, vec3 rd, float px, out Edge edges[AA_LAYERS], out int ed
         if (d.x < d2) {
             descending = true;
         } else if (descending) {
-            // The previous sample was a local minimum: the ray just passed a surface.
+            // The previous sample was a local minimum: the ray just passed a surface, provided
+            // the distance changed no faster than the ray moved (an exact SDF is 1-Lipschitz;
+            // bounds get some slack). A bigger jump is a discontinuity in map(), such as a
+            // bounding-volume early-out, and must not be mistaken for a near miss.
             descending = false;
+            bool plausible = (d.x - d2) <= 2.0 * (h.t - t2) + SURF_EPS
+                          && (d1 - d2) <= 2.0 * (t2 - t1) + SURF_EPS;
             float tMin, dMin;
             refineClosest(t1, d1, t2, d2, h.t, d.x, tMin, dMin);
             float r = px * tMin;
-            if (dMin < AA_WIDTH * r && edgeCount < AA_LAYERS) {
+            if (plausible && dMin < AA_WIDTH * r && edgeCount < AA_LAYERS) {
                 float a = clamp((AA_WIDTH * r - dMin) / ((AA_WIDTH - AA_HIT) * r), 0.0, 1.0) * (1.0 - cover);
                 edges[edgeCount] = Edge(tMin, m2, a);
                 ++edgeCount;

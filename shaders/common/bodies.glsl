@@ -5,6 +5,7 @@
 // with SATYR_QUERY_PASS defined, where sdBodies() returns nothing so bodies never collide
 // with themselves.
 #pragma once
+#include "camera.glsl"
 
 #ifndef SATYR_MAX_BODIES
 #define SATYR_MAX_BODIES 64
@@ -32,9 +33,13 @@ vec2 sdBodies(vec3 p)
 #else
     if (uBodyCount == 0) return vec2(1e10, MAT_BODY);
 
-    // Distance to the bounding sphere is a safe lower bound: skip the loop when far away.
+    // Distance to the bounding sphere is a safe lower bound: skip the loop when far away. The
+    // field jumps up where the loop takes over, so the switch happens well outside anything a
+    // march could treat as a surface: the margin scales with the pixel footprint at p, which
+    // bounds both the cone-AA hit threshold and its near-miss band (see rayMarchAA).
     float bound = length(p - uBodyBounds.xyz) - uBodyBounds.w;
-    if (bound > 0.1) return vec2(bound, MAT_BODY);
+    float margin = max(0.1, 2.0 * pixelRadius() * length(p - uCamPos));
+    if (bound > margin) return vec2(bound, MAT_BODY);
 
     float best = 1e10;
     int bestIndex = 0;

@@ -102,8 +102,10 @@ vec3 shadeHit(vec3 ro, vec3 rd, float t, float mat)
         float rim = pow(1.0 - max(dot(n, -rd), 0.0), 2.0);
         col = c * (0.6 + 1.5 * rim);
     } else {
+        vec3 ddx, ddy;
+        surfaceFootprint(ro, gl_FragCoord.xy, p, n, ddx, ddy);
         vec3 albedo = mat < 0.5
-            ? mix(vec3(0.12), vec3(0.3), checker(p.xz * 0.5))
+            ? mix(vec3(0.12), vec3(0.3), checkerFiltered(p.xz * 0.5, ddx.xz * 0.5, ddy.xz * 0.5))
             : vec3(0.55, 0.5, 0.45);
         col = shadeStandard(p, n, rd, albedo, sunDir(), 24.0) * 0.45;
 

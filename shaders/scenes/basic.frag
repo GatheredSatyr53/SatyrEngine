@@ -69,15 +69,14 @@ vec2 map(vec3 p)
     return res;
 }
 
-vec3 material(float mat, vec3 p)
+vec3 material(float mat, vec3 p, vec3 ddx, vec3 ddy)
 {
     if (isBody(mat)) return bodyColor(bodyIndex(mat));
     int id = int(mat + 0.5);
     if (id == 0) {
-        vec3 c = mix(vec3(0.22, 0.22, 0.24), vec3(0.65, 0.63, 0.6), checker(p.xz));
-        // Thin grid lines every unit.
-        vec2 g = abs(fract(p.xz + 0.5) - 0.5);
-        c *= 1.0 - 0.5 * (1.0 - smoothstep(0.0, 0.03, min(g.x, g.y)));
+        // Checker and grid lines filtered by the pixel footprint so the distance stays calm.
+        vec3 c = mix(vec3(0.22, 0.22, 0.24), vec3(0.65, 0.63, 0.6), checkerFiltered(p.xz, ddx.xz, ddy.xz));
+        c *= 1.0 - 0.5 * gridLinesFiltered(p.xz, 0.03, ddx.xz, ddy.xz);
         return c;
     }
     if (id == 1) return vec3(0.9, 0.35, 0.2);
@@ -99,8 +98,10 @@ vec3 shadeHit(vec3 ro, vec3 rd, float t, float mat)
 {
     vec3 p = ro + rd * t;
     vec3 n = calcNormal(p);
+    vec3 ddx, ddy;
+    surfaceFootprint(ro, gl_FragCoord.xy, p, n, ddx, ddy);
     int id = int(mat + 0.5);
-    vec3 col = shadeStandard(p, n, rd, material(mat, p), sunDir(), id == 3 ? 128.0 : 32.0);
+    vec3 col = shadeStandard(p, n, rd, material(mat, p, ddx, ddy), sunDir(), id == 3 ? 128.0 : 32.0);
     return applyFog(col, t, shadeMiss(ro, rd), 0.015);
 }
 

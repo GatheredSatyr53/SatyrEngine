@@ -67,11 +67,11 @@ vec2 map(vec3 p)
     return res;
 }
 
-vec3 material(float mat, vec3 p)
+vec3 material(float mat, vec3 p, vec3 ddx, vec3 ddy)
 {
     if (isBody(mat)) return bodyColor(bodyIndex(mat));
     int id = int(mat + 0.5);
-    if (id == 0) return mix(vec3(0.28, 0.3, 0.33), vec3(0.6, 0.6, 0.58), checker(p.xz));
+    if (id == 0) return mix(vec3(0.28, 0.3, 0.33), vec3(0.6, 0.6, 0.58), checkerFiltered(p.xz, ddx.xz, ddy.xz));
     if (id == 1) return vec3(0.85, 0.8, 0.7);
     if (id == 2) return vec3(0.75, 0.45, 0.25);
     if (id == 3) return vec3(0.45, 0.55, 0.7);
@@ -90,7 +90,9 @@ vec3 shadeHit(vec3 ro, vec3 rd, float t, float mat)
 {
     vec3 p = ro + rd * t;
     vec3 n = calcNormal(p);
-    vec3 col = shadeStandard(p, n, rd, material(mat, p), sunDir(), isBody(mat) ? 64.0 : 24.0);
+    vec3 ddx, ddy;
+    surfaceFootprint(ro, gl_FragCoord.xy, p, n, ddx, ddy);
+    vec3 col = shadeStandard(p, n, rd, material(mat, p, ddx, ddy), sunDir(), isBody(mat) ? 64.0 : 24.0);
     return applyFog(col, t, shadeMiss(ro, rd), 0.012);
 }
 
