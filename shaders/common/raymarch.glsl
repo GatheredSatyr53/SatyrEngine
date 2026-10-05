@@ -62,23 +62,6 @@ struct Edge {
     float a;    // coverage, already attenuated by the layers in front (sum over layers <= 1)
 };
 
-// Refines the closest approach from three consecutive samples (d1 > d2 < d3) by fitting a
-// parabola through them; sphere tracing alone only knows dmin to within one step.
-void refineClosest(float t1, float d1, float t2, float d2, float t3, float d3, out float tMin, out float dMin)
-{
-    tMin = t2;
-    dMin = d2;
-    float a = t1 - t2; // < 0
-    float b = t3 - t2; // > 0
-    if (a > -1e-7 || b < 1e-7) return;
-    float A = ((d3 - d2) - (b / a) * (d1 - d2)) / (b * (b - a));
-    if (A <= 0.0) return;
-    float B = (d1 - d2 - A * a * a) / a;
-    float x = clamp(-B / (2.0 * A), a, b);
-    tMin = t2 + x;
-    dMin = clamp(A * x * x + B * x + d2, 0.0, d2);
-}
-
 Hit rayMarchAA(vec3 ro, vec3 rd, float px, out Edge edges[AA_LAYERS], out int edgeCount)
 {
     Hit h;
@@ -89,8 +72,7 @@ Hit rayMarchAA(vec3 ro, vec3 rd, float px, out Edge edges[AA_LAYERS], out int ed
 
     edgeCount = 0;
     float cover = 0.0;
-    // Last two samples (t, distance, material) and whether the distance was shrinking.
-    float t1 = 0.0, d1 = 1e10;
+    // Previous sample (t, distance, material) and whether the distance was shrinking.
     float t2 = 0.0, d2 = 1e10, m2 = -1.0;
     bool descending = false;
 
@@ -107,26 +89,28 @@ Hit rayMarchAA(vec3 ro, vec3 rd, float px, out Edge edges[AA_LAYERS], out int ed
         if (d.x < d2) {
             descending = true;
         } else if (descending) {
-            // The previous sample was a local minimum: the ray just passed a surface, provided
-            // the distance changed no faster than the ray moved (an exact SDF is 1-Lipschitz;
-            // bounds get some slack). A bigger jump is a discontinuity in map(), such as a
-            // bounding-volume early-out, and must not be mistaken for a near miss.
+            // The previous sample was a local minimum: the ray just passed a surface. The sample
+            // overestimates the closest approach by at most one step, which is tiny next to a
+            // smooth surface; no attempt is made to refine it, because any extrapolation across
+            // the samples is fooled by discontinuities in map() (see below).
+            //
+            // Only accept the minimum if the distance then grew no faster than the ray moved (an
+            // exact SDF is 1-Lipschitz; bounds get some slack): a bigger jump is a discontinuity,
+            // such as a bounding-volume early-out, and not a surface. A jump *down* cannot be
+            // told apart from a surface by this test, so fields with early-outs must switch at a
+            // margin above the near-miss band (see bodies.glsl).
             descending = false;
-            bool plausible = (d.x - d2) <= 2.0 * (h.t - t2) + SURF_EPS
-                          && (d1 - d2) <= 2.0 * (t2 - t1) + SURF_EPS;
-            float tMin, dMin;
-            refineClosest(t1, d1, t2, d2, h.t, d.x, tMin, dMin);
-            float r = px * tMin;
-            if (plausible && dMin < AA_WIDTH * r && edgeCount < AA_LAYERS) {
-                float a = clamp((AA_WIDTH * r - dMin) / ((AA_WIDTH - AA_HIT) * r), 0.0, 1.0) * (1.0 - cover);
-                edges[edgeCount] = Edge(tMin, m2, a);
+            bool plausible = (d.x - d2) <= 2.0 * (h.t - t2) + SURF_EPS;
+            float r = px * t2;
+            if (plausible && d2 < AA_WIDTH * r && edgeCount < AA_LAYERS) {
+                float a = clamp((AA_WIDTH * r - d2) / ((AA_WIDTH - AA_HIT) * r), 0.0, 1.0) * (1.0 - cover);
+                edges[edgeCount] = Edge(t2, m2, a);
                 ++edgeCount;
                 cover += a;
                 if (cover > 0.99) break;
             }
         }
 
-        t1 = t2; d1 = d2;
         t2 = h.t; d2 = d.x; m2 = d.y;
         h.t += d.x * STEP_SCALE;
         if (h.t > MAX_DIST) break;
