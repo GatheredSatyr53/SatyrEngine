@@ -42,10 +42,10 @@ Body Body::makeSphere(const vec3& position, float radius, float density)
     return b;
 }
 
-Body Body::makeBox(const vec3& position, const vec3& halfExtents, float rounding, float density)
+Body Body::makeBox(const vec3& position, const vec3& halfExtents, Shape shape, float rounding, float density)
 {
     Body b;
-    b.shape = Shape::Box;
+    b.shape = shape == Shape::Box20 ? Shape::Box20 : Shape::Box;
     b.position = position;
     b.halfExtents = halfExtents;
     const float smallest = std::min(halfExtents.x, std::min(halfExtents.y, halfExtents.z));
@@ -128,6 +128,16 @@ void Physics::contactPoints(const Body& body, vec3* out, float& pointRadius)
         for (int sy = -1; sy <= 1; sy += 2)
             for (int sz = -1; sz <= 1; sz += 2)
                 out[k++] = body.position + R * vec3(sx * core.x, sy * core.y, sz * core.z);
+    if (body.shape != Shape::Box20) return;
+
+    // Edge midpoints: one coordinate zero, the other two at the corners.
+    for (int s1 = -1; s1 <= 1; s1 += 2) {
+        for (int s2 = -1; s2 <= 1; s2 += 2) {
+            out[k++] = body.position + R * vec3(0.0f, s1 * core.y, s2 * core.z);
+            out[k++] = body.position + R * vec3(s1 * core.x, 0.0f, s2 * core.z);
+            out[k++] = body.position + R * vec3(s1 * core.x, s2 * core.y, 0.0f);
+        }
+    }
 }
 
 void Physics::samplePoints(std::vector<vec3>& out)

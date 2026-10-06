@@ -1,9 +1,10 @@
 // Evaluates the scene's distance field on the GPU for a handful of points (the physics bodies).
 //
 // The probe compiles the scene's fragment shader a second time with SATYR_QUERY_PASS defined
-// and its main() replaced: each pixel of an N x 1 float render target samples map() and a
-// finite-difference normal for one query point. Results are read back through a pixel buffer
-// object one frame later, so the CPU never stalls on the GPU.
+// and its main() replaced: each pixel of a small float render target (query i lives at pixel
+// (i % width, i / width)) samples map() and a finite-difference normal for one query point.
+// Results are read back through a pixel buffer object one frame later, so the CPU never stalls
+// on the GPU.
 #pragma once
 
 #include "engine/Physics.h"
@@ -47,7 +48,10 @@ private:
 
     Shader m_shader;
     int m_capacity = 0;
+    int m_width = 0;      // texels per row of the query target
+    int m_rows = 0;
     int m_pending = 0;
+    int m_pendingRows = 0;
     GLuint m_vao = 0;
     GLuint m_inputTex = 0;
     GLuint m_outputTex = 0;

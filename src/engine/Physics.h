@@ -1,11 +1,17 @@
 // Basic rigid-body physics (spheres and boxes) against the scene's distance field.
 //
 // Bodies are integrated on the CPU with orientation and angular velocity. Contact with the scene
-// uses one SDF sample per contact point (a sphere's centre, a box's eight rounded corners),
-// produced by SdfProbe on the GPU one frame old: within a frame the field is extrapolated as
-// the plane  d(p) ≈ d0 + dot(n, p - p0)  around each sample. Contacts are resolved with
-// sequential impulses (restitution, Coulomb friction) so boxes tumble and spheres roll.
-// Body-body collisions test each body's contact points against the other body's analytic SDF.
+// uses one SDF sample per contact point, produced by SdfProbe on the GPU one frame old: within a
+// frame the field is extrapolated as the plane  d(p) ≈ d0 + dot(n, p - p0)  around each sample.
+// Contacts are resolved with sequential impulses (restitution, Coulomb friction) so boxes tumble
+// and spheres roll. Body-body collisions test each body's contact points against the other
+// body's analytic SDF.
+//
+// Contact points per shape, much like element orders in FEA bricks:
+//   Sphere  1 point, the centre (with the radius as contact offset)
+//   Box     8 points, the rounded corners (the "linear" 8-node brick): cheap, but a ledge
+//           narrower than the corner spacing or an edge-on-edge crossing goes unnoticed
+//   Box20   8 corners + 12 edge midpoints (the "quadratic" 20-node brick): catches those
 #pragma once
 
 #include "engine/Math.h"
@@ -15,9 +21,9 @@
 namespace satyr {
 
 constexpr int kMaxBodies = 64;          // must match SATYR_MAX_BODIES in the shader prelude
-constexpr int kMaxSamplesPerBody = 8;   // box corners
+constexpr int kMaxSamplesPerBody = 20;  // Box20: corners + edge midpoints
 
-enum class Shape { Sphere, Box };
+enum class Shape { Sphere, Box, Box20 };
 
 struct Body {
     Shape shape = Shape::Sphere;
@@ -34,9 +40,12 @@ struct Body {
     int sampleOffset = 0;              // index of this body's first contact sample (see samplePoints)
 
     static Body makeSphere(const vec3& position, float radius, float density = 10.0f);
-    static Body makeBox(const vec3& position, const vec3& halfExtents, float rounding = 0.05f, float density = 10.0f);
+    // `shape` is Box (8 contact points) or Box20 (20 contact points); geometry is the same.
+    static Body makeBox(const vec3& position, const vec3& halfExtents, Shape shape = Shape::Box,
+                        float rounding = 0.05f, float density = 10.0f);
 
-    int sampleCount() const { return shape == Shape::Box ? 8 : 1; }
+    bool isBox() const { return shape != Shape::Sphere; }
+    int sampleCount() const { return shape == Shape::Box20 ? 20 : (shape == Shape::Box ? 8 : 1); }
     float boundingRadius() const;
     mat3 rotation() const { return toMat3(orientation); }
     mat3 invInertiaWorld() const;

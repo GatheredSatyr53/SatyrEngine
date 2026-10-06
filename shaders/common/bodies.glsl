@@ -23,7 +23,7 @@
 
 uniform vec4 uBodies[SATYR_MAX_BODIES];  // xyz centre, w sphere radius or box corner rounding
 uniform vec4 uBodyRot[SATYR_MAX_BODIES]; // orientation quaternion (x, y, z, w)
-uniform vec4 uBodyExt[SATYR_MAX_BODIES]; // xyz box outer half extents, w = 1 for a box, 0 for a sphere
+uniform vec4 uBodyExt[SATYR_MAX_BODIES]; // xyz box outer half extents, w: 0 sphere, 1 box, 2 box with 20 contact points
 uniform int  uBodyCount;
 uniform vec4 uBodyBounds;                // sphere enclosing all bodies (xyz centre, w radius)
 
@@ -39,6 +39,7 @@ vec3 bodyColor(int i)
 }
 
 bool isBoxBody(int i) { return uBodyExt[i].w > 0.5; }
+int bodyKind(int i) { return int(uBodyExt[i].w + 0.5); } // 0 sphere, 1 box, 2 box with edge contacts
 
 // Rotates v by the conjugate of q: world space into the body's local frame.
 vec3 bodyLocal(int i, vec3 v)
