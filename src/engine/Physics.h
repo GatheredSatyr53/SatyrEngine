@@ -12,6 +12,9 @@
 //   Box     8 points, the rounded corners (the "linear" 8-node brick): cheap, but a ledge
 //           narrower than the corner spacing or an edge-on-edge crossing goes unnoticed
 //   Box20   8 corners + 12 edge midpoints (the "quadratic" 20-node brick): catches those
+//   Box27   Box20 + 6 face centres + the volume centre (the 27-node Lagrange brick): a face
+//           can rest on a post thinner than the edge spacing, and the centre node acts as the
+//           inscribed sphere, pushing the box out when every surface point has tunnelled
 #pragma once
 
 #include "engine/Math.h"
@@ -21,9 +24,9 @@
 namespace satyr {
 
 constexpr int kMaxBodies = 64;          // must match SATYR_MAX_BODIES in the shader prelude
-constexpr int kMaxSamplesPerBody = 20;  // Box20: corners + edge midpoints
+constexpr int kMaxSamplesPerBody = 27;  // Box27: corners, edge midpoints, face centres, centre
 
-enum class Shape { Sphere, Box, Box20 };
+enum class Shape { Sphere, Box, Box20, Box27 };
 
 struct Body {
     Shape shape = Shape::Sphere;
@@ -40,12 +43,20 @@ struct Body {
     int sampleOffset = 0;              // index of this body's first contact sample (see samplePoints)
 
     static Body makeSphere(const vec3& position, float radius, float density = 10.0f);
-    // `shape` is Box (8 contact points) or Box20 (20 contact points); geometry is the same.
+    // `shape` is Box, Box20 or Box27 (8 / 20 / 27 contact points); geometry is the same.
     static Body makeBox(const vec3& position, const vec3& halfExtents, Shape shape = Shape::Box,
                         float rounding = 0.05f, float density = 10.0f);
 
     bool isBox() const { return shape != Shape::Sphere; }
-    int sampleCount() const { return shape == Shape::Box20 ? 20 : (shape == Shape::Box ? 8 : 1); }
+    int sampleCount() const
+    {
+        switch (shape) {
+            case Shape::Box:   return 8;
+            case Shape::Box20: return 20;
+            case Shape::Box27: return 27;
+            default:           return 1;
+        }
+    }
     float boundingRadius() const;
     mat3 rotation() const { return toMat3(orientation); }
     mat3 invInertiaWorld() const;
@@ -100,7 +111,9 @@ private:
         float penetration; // > 0
     };
 
-    static void contactPoints(const Body& body, vec3* out, float& pointRadius);
+    // World-space contact points and the contact radius of each (sphere radius, box rounding,
+    // or the inscribed sphere for a Box27 centre).
+    static void contactPoints(const Body& body, vec3* out, float* radii);
     void collideWithScene(Body& body, const std::vector<vec3>& startPoints, const std::vector<SurfaceSample>& field, float h);
     void collideBodies();
     void resolveSceneContact(Body& body, const Contact& c, float h);

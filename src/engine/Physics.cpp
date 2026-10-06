@@ -45,7 +45,7 @@ Body Body::makeSphere(const vec3& position, float radius, float density)
 Body Body::makeBox(const vec3& position, const vec3& halfExtents, Shape shape, float rounding, float density)
 {
     Body b;
-    b.shape = shape == Shape::Box20 ? Shape::Box20 : Shape::Box;
+    b.shape = shape == Shape::Sphere ? Shape::Box : shape;
     b.position = position;
     b.halfExtents = halfExtents;
     const float smallest = std::min(halfExtents.x, std::min(halfExtents.y, halfExtents.z));
@@ -114,9 +114,10 @@ bool Physics::add(const Body& body)
     return true;
 }
 
-void Physics::contactPoints(const Body& body, vec3* out, float& pointRadius)
+void Physics::contactPoints(const Body& body, vec3* out, float* radii)
 {
-    pointRadius = body.radius;
+    const int count = body.sampleCount();
+    for (int i = 0; i < count; ++i) radii[i] = body.radius;
     if (body.shape == Shape::Sphere) {
         out[0] = body.position;
         return;
@@ -128,7 +129,7 @@ void Physics::contactPoints(const Body& body, vec3* out, float& pointRadius)
         for (int sy = -1; sy <= 1; sy += 2)
             for (int sz = -1; sz <= 1; sz += 2)
                 out[k++] = body.position + R * vec3(sx * core.x, sy * core.y, sz * core.z);
-    if (body.shape != Shape::Box20) return;
+    if (body.shape == Shape::Box) return;
 
     // Edge midpoints: one coordinate zero, the other two at the corners.
     for (int s1 = -1; s1 <= 1; s1 += 2) {
@@ -138,6 +139,16 @@ void Physics::contactPoints(const Body& body, vec3* out, float& pointRadius)
             out[k++] = body.position + R * vec3(s1 * core.x, s2 * core.y, 0.0f);
         }
     }
+    if (body.shape != Shape::Box27) return;
+
+    // Face centres, then the volume centre as the inscribed sphere (a tunnelling guard).
+    for (int s1 = -1; s1 <= 1; s1 += 2) {
+        out[k++] = body.position + R * vec3(s1 * core.x, 0.0f, 0.0f);
+        out[k++] = body.position + R * vec3(0.0f, s1 * core.y, 0.0f);
+        out[k++] = body.position + R * vec3(0.0f, 0.0f, s1 * core.z);
+    }
+    out[k] = body.position;
+    radii[k] = std::min(body.halfExtents.x, std::min(body.halfExtents.y, body.halfExtents.z));
 }
 
 void Physics::samplePoints(std::vector<vec3>& out)
@@ -146,8 +157,8 @@ void Physics::samplePoints(std::vector<vec3>& out)
     for (Body& b : m_bodies) {
         b.sampleOffset = static_cast<int>(out.size());
         vec3 pts[kMaxSamplesPerBody];
-        float r = 0.0f;
-        contactPoints(b, pts, r);
+        float radii[kMaxSamplesPerBody];
+        contactPoints(b, pts, radii);
         for (int i = 0; i < b.sampleCount(); ++i) out.push_back(pts[i]);
     }
 }
@@ -164,8 +175,8 @@ void Physics::step(float dt, const std::vector<SurfaceSample>& field)
     const size_t count = m_bodies.size();
     m_startPoints.resize(count * kMaxSamplesPerBody);
     for (size_t i = 0; i < count; ++i) {
-        float r = 0.0f;
-        contactPoints(m_bodies[i], &m_startPoints[i * kMaxSamplesPerBody], r);
+        float radii[kMaxSamplesPerBody];
+        contactPoints(m_bodies[i], &m_startPoints[i * kMaxSamplesPerBody], radii);
     }
 
     for (int s = 0; s < steps; ++s) {
@@ -196,8 +207,8 @@ void Physics::step(float dt, const std::vector<SurfaceSample>& field)
 void Physics::collideWithScene(Body& body, const std::vector<vec3>& startPoints, const std::vector<SurfaceSample>& field, float h)
 {
     vec3 pts[kMaxSamplesPerBody];
-    float pointRadius = 0.0f;
-    contactPoints(body, pts, pointRadius);
+    float radii[kMaxSamplesPerBody];
+    contactPoints(body, pts, radii);
     const size_t bodyIndex = static_cast<size_t>(&body - m_bodies.data());
 
     Contact contacts[kMaxSamplesPerBody];
@@ -207,8 +218,8 @@ void Physics::collideWithScene(Body& body, const std::vector<vec3>& startPoints,
         if (!s.valid || !std::isfinite(s.distance)) continue;
         const vec3& start = startPoints[bodyIndex * kMaxSamplesPerBody + static_cast<size_t>(k)];
         // Planar extrapolation of the field around the sample, minus the point's own radius.
-        const float gap = s.distance + dot(s.normal, pts[k] - start) - pointRadius;
-        if (gap < 0.0f) contacts[contactCount++] = {pts[k] - s.normal * pointRadius, s.normal, -gap};
+        const float gap = s.distance + dot(s.normal, pts[k] - start) - radii[k];
+        if (gap < 0.0f) contacts[contactCount++] = {pts[k] - s.normal * radii[k], s.normal, -gap};
     }
     if (contactCount == 0) return;
 
@@ -264,12 +275,12 @@ void Physics::collideBodies()
                 Body& self = pass == 0 ? a : b;
                 Body& other = pass == 0 ? b : a;
                 vec3 pts[kMaxSamplesPerBody];
-                float pointRadius = 0.0f;
-                contactPoints(self, pts, pointRadius);
+                float radii[kMaxSamplesPerBody];
+                contactPoints(self, pts, radii);
                 for (int k = 0; k < self.sampleCount(); ++k) {
                     vec3 n;
-                    const float gap = other.distance(pts[k], n) - pointRadius;
-                    if (gap < 0.0f) resolvePairContact(self, other, pts[k] - n * pointRadius, n, -gap);
+                    const float gap = other.distance(pts[k], n) - radii[k];
+                    if (gap < 0.0f) resolvePairContact(self, other, pts[k] - n * radii[k], n, -gap);
                 }
             }
         }

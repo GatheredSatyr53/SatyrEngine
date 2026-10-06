@@ -44,7 +44,8 @@ struct Options {
     int frames = -1;                // exit after this many frames (-1 = run until closed)
     int spawn = 0;                  // balls dropped at start
     int spawnBoxes = 0;             // 8-point boxes dropped at start
-    int spawnFineBoxes = 0;         // 20-point boxes dropped at start
+    int spawnBoxes20 = 0;           // 20-point boxes dropped at start
+    int spawnBoxes27 = 0;           // 27-point boxes dropped at start
     float spawnSpread = 1.5f;       // horizontal scatter of dropped bodies
     bool spawnUpright = false;      // drop boxes axis-aligned and without spin
     fs::path scene;
@@ -74,7 +75,8 @@ void printUsage(const char* exe)
         "      --screenshot F   save a PNG to F before exiting\n"
         "      --spawn N        drop N physics balls at start\n"
         "      --spawn-boxes N  drop N physics boxes at start (8 contact points)\n"
-        "      --spawn-fine-boxes N  drop N boxes with 20 contact points (corners + edge midpoints)\n"
+        "      --spawn-boxes20 N  drop N boxes with 20 contact points (corners + edge midpoints)\n"
+        "      --spawn-boxes27 N  drop N boxes with 27 contact points (+ face centres + centre)\n"
         "      --spawn-spread S horizontal scatter of dropped bodies (default 1.5; 0 stacks them)\n"
         "      --spawn-upright  drop boxes axis-aligned and without spin\n"
         "      --paused         start with scene time paused, so frames accumulate immediately\n"
@@ -97,7 +99,8 @@ void printControls()
         "  R                     reload shaders (they also reload automatically on save)\n"
         "  P / T                 pause / reset scene time (physics pauses too)\n"
         "                        while paused and the camera is still, frames accumulate: AA converges\n"
-        "  B / N / M             throw a ball / a box (8 contact points) / a box with 20 contact points\n"
+        "  B                     throw a ball\n"
+        "  N / M / K             throw a box with 8 / 20 / 27 contact points\n"
         "  G / X                 drop a handful of mixed bodies / clear all bodies\n"
         "  - / =                 lower / raise render resolution scale\n"
         "  F2 or F12             screenshot (saved into ./screenshots)\n"
@@ -149,9 +152,12 @@ bool parseArgs(int argc, char** argv, Options& opt)
         } else if (a == "--spawn-boxes") {
             if (!(v = needValue(i, a.c_str()))) return false;
             opt.spawnBoxes = std::atoi(v);
-        } else if (a == "--spawn-fine-boxes") {
+        } else if (a == "--spawn-boxes20" || a == "--spawn-fine-boxes") {
             if (!(v = needValue(i, a.c_str()))) return false;
-            opt.spawnFineBoxes = std::atoi(v);
+            opt.spawnBoxes20 = std::atoi(v);
+        } else if (a == "--spawn-boxes27") {
+            if (!(v = needValue(i, a.c_str()))) return false;
+            opt.spawnBoxes27 = std::atoi(v);
         } else if (a == "--spawn-spread") {
             if (!(v = needValue(i, a.c_str()))) return false;
             opt.spawnSpread = static_cast<float>(std::atof(v));
@@ -402,7 +408,7 @@ void uploadBodies(Shader& shader, const Physics& physics)
         ext[i * 4 + 0] = b.halfExtents.x;
         ext[i * 4 + 1] = b.halfExtents.y;
         ext[i * 4 + 2] = b.halfExtents.z;
-        ext[i * 4 + 3] = b.shape == Shape::Sphere ? 0.0f : (b.shape == Shape::Box ? 1.0f : 2.0f);
+        ext[i * 4 + 3] = b.shape == Shape::Sphere ? 0.0f : (b.shape == Shape::Box ? 1.0f : (b.shape == Shape::Box20 ? 2.0f : 3.0f));
     }
     shader.set("uBodyCount", static_cast<int>(n));
     shader.setVec4Array("uBodies[0]", pos.data(), static_cast<int>(n));
@@ -442,7 +448,7 @@ public:
     bool upright = false;   // axis-aligned boxes without spin
 
     // Drops `count` bodies in a loose cloud above `point`, all of `shape`, or cycling through
-    // sphere / box / 20-point box when `mixed` is set.
+    // sphere / box / 20-point box / 27-point box when `mixed` is set.
     int dropAbove(const vec3& point, int count, Physics& physics, Shape shape, bool mixed = false)
     {
         std::uniform_real_distribution<float> scatter(-spread, spread);
@@ -451,7 +457,10 @@ public:
         for (int i = 0; i < count; ++i) {
             const vec3 at = point + vec3(scatter(m_rng), lift(m_rng), scatter(m_rng));
             Shape s = shape;
-            if (mixed) s = (i % 3 == 0) ? Shape::Sphere : (i % 3 == 1 ? Shape::Box : Shape::Box20);
+            if (mixed) {
+                const Shape kinds[4] = {Shape::Sphere, Shape::Box, Shape::Box20, Shape::Box27};
+                s = kinds[i % 4];
+            }
             Body b = s == Shape::Sphere ? Body::makeSphere(at, randomRadius()) : Body::makeBox(at, randomHalfExtents(), s);
             if (s != Shape::Sphere && !upright) {
                 b.orientation = randomOrientation();
@@ -602,7 +611,8 @@ int main(int argc, char** argv)
     factory.upright = opt.spawnUpright;
     if (physicsEnabled && opt.spawn > 0) factory.dropAbove(sceneTarget, opt.spawn, physics, Shape::Sphere);
     if (physicsEnabled && opt.spawnBoxes > 0) factory.dropAbove(sceneTarget, opt.spawnBoxes, physics, Shape::Box);
-    if (physicsEnabled && opt.spawnFineBoxes > 0) factory.dropAbove(sceneTarget, opt.spawnFineBoxes, physics, Shape::Box20);
+    if (physicsEnabled && opt.spawnBoxes20 > 0) factory.dropAbove(sceneTarget, opt.spawnBoxes20, physics, Shape::Box20);
+    if (physicsEnabled && opt.spawnBoxes27 > 0) factory.dropAbove(sceneTarget, opt.spawnBoxes27, physics, Shape::Box27);
 
     printControls();
 
@@ -692,6 +702,8 @@ int main(int argc, char** argv)
                 if (in.pressed(GLFW_KEY_N) && !factory.throwBox(camera, physics, Shape::Box))
                     std::printf("[physics] body limit (%d) reached\n", kMaxBodies);
                 if (in.pressed(GLFW_KEY_M) && !factory.throwBox(camera, physics, Shape::Box20))
+                    std::printf("[physics] body limit (%d) reached\n", kMaxBodies);
+                if (in.pressed(GLFW_KEY_K) && !factory.throwBox(camera, physics, Shape::Box27))
                     std::printf("[physics] body limit (%d) reached\n", kMaxBodies);
                 if (in.pressed(GLFW_KEY_G))
                     factory.dropAbove(camera.position + camera.forward() * 4.0f, 8, physics, Shape::Sphere, true);
@@ -846,16 +858,17 @@ int main(int argc, char** argv)
     }
     if (physicsEnabled && !physics.empty()) {
         float lowest = 1e9f, maxSpeed = 0.0f, maxSpin = 0.0f;
-        int boxes = 0, fineBoxes = 0;
+        int boxes[3] = {0, 0, 0};
         for (const Body& b : physics.bodies()) {
             lowest = std::min(lowest, b.position.y);
             maxSpeed = std::max(maxSpeed, length(b.velocity));
             maxSpin = std::max(maxSpin, length(b.angularVelocity));
-            if (b.shape == Shape::Box) ++boxes;
-            if (b.shape == Shape::Box20) ++fineBoxes;
+            if (b.shape == Shape::Box) ++boxes[0];
+            if (b.shape == Shape::Box20) ++boxes[1];
+            if (b.shape == Shape::Box27) ++boxes[2];
         }
-        std::printf("[physics] %d bodies at exit (%d boxes, %d 20-point boxes), lowest centre y = %.3f, max speed %.3f m/s, max spin %.3f rad/s\n",
-                    static_cast<int>(physics.size()), boxes, fineBoxes, static_cast<double>(lowest),
+        std::printf("[physics] %d bodies at exit (boxes: %d x8, %d x20, %d x27), lowest centre y = %.3f, max speed %.3f m/s, max spin %.3f rad/s\n",
+                    static_cast<int>(physics.size()), boxes[0], boxes[1], boxes[2], static_cast<double>(lowest),
                     static_cast<double>(maxSpeed), static_cast<double>(maxSpin));
     }
     return 0;
