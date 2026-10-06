@@ -262,15 +262,26 @@ void Physics::resolveSceneContact(Body& body, const Contact& c, float /*h*/)
 void Physics::collideBodies()
 {
     const size_t count = m_bodies.size();
+    if (count < 2) return;
+
+    // Broad phase: the grid lists every body within reach of a cell, so each body only meets
+    // its neighbours instead of all N-1 others.
+    m_grid.build(m_bodies, 0.5f, 0.0f);
+    m_pairStamp.assign(count, -1);
+
     for (size_t i = 0; i < count; ++i) {
-        for (size_t j = i + 1; j < count; ++j) {
+        m_grid.forEachCandidate(m_bodies, i, [&](int jIndex) {
+            const size_t j = static_cast<size_t>(jIndex);
+            if (j <= i || m_pairStamp[j] == static_cast<int>(i)) return; // each pair once
+            m_pairStamp[j] = static_cast<int>(i);
+
             Body& a = m_bodies[i];
             Body& b = m_bodies[j];
             const float reach = a.boundingRadius() + b.boundingRadius();
             const vec3 d = b.position - a.position;
-            if (dot(d, d) > reach * reach) continue;
+            if (dot(d, d) > reach * reach) return;
 
-            // Each body's contact points against the other's distance field.
+            // Narrow phase: each body's contact points against the other's distance field.
             for (int pass = 0; pass < 2; ++pass) {
                 Body& self = pass == 0 ? a : b;
                 Body& other = pass == 0 ? b : a;
@@ -283,7 +294,7 @@ void Physics::collideBodies()
                     if (gap < 0.0f) resolvePairContact(self, other, pts[k] - n * radii[k], n, -gap);
                 }
             }
-        }
+        });
     }
 }
 

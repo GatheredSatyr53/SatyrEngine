@@ -17,59 +17,13 @@
 //           inscribed sphere, pushing the box out when every surface point has tunnelled
 #pragma once
 
+#include "engine/Body.h"
+#include "engine/BodyGrid.h"
 #include "engine/Math.h"
 
 #include <vector>
 
 namespace satyr {
-
-constexpr int kMaxBodies = 64;          // must match SATYR_MAX_BODIES in the shader prelude
-constexpr int kMaxSamplesPerBody = 27;  // Box27: corners, edge midpoints, face centres, centre
-
-enum class Shape { Sphere, Box, Box20, Box27 };
-
-struct Body {
-    Shape shape = Shape::Sphere;
-    vec3 position;
-    vec3 velocity;
-    quat orientation;
-    vec3 angularVelocity;              // world space, radians per second
-    float radius = 0.3f;               // sphere radius, or corner rounding of a box
-    vec3 halfExtents{0.3f, 0.3f, 0.3f}; // box outer half extents (unused for spheres)
-    float mass = 1.0f;
-    float restitution = 0.5f;
-    float friction = 0.5f;             // Coulomb coefficient
-    vec3 invInertiaLocal{1, 1, 1};     // 1 / principal moments, body space
-    int sampleOffset = 0;              // index of this body's first contact sample (see samplePoints)
-
-    static Body makeSphere(const vec3& position, float radius, float density = 10.0f);
-    // `shape` is Box, Box20 or Box27 (8 / 20 / 27 contact points); geometry is the same.
-    static Body makeBox(const vec3& position, const vec3& halfExtents, Shape shape = Shape::Box,
-                        float rounding = 0.05f, float density = 10.0f);
-
-    bool isBox() const { return shape != Shape::Sphere; }
-    int sampleCount() const
-    {
-        switch (shape) {
-            case Shape::Box:   return 8;
-            case Shape::Box20: return 20;
-            case Shape::Box27: return 27;
-            default:           return 1;
-        }
-    }
-    float boundingRadius() const;
-    mat3 rotation() const { return toMat3(orientation); }
-    mat3 invInertiaWorld() const;
-    // Signed distance from p to this body's surface, with the outward normal.
-    float distance(const vec3& p, vec3& normal) const;
-};
-
-// Scene distance field sampled at a contact point.
-struct SurfaceSample {
-    vec3 normal{0.0f, 1.0f, 0.0f};
-    float distance = 1e9f;
-    bool valid = false;
-};
 
 class Physics {
 public:
@@ -115,12 +69,14 @@ private:
     // or the inscribed sphere for a Box27 centre).
     static void contactPoints(const Body& body, vec3* out, float* radii);
     void collideWithScene(Body& body, const std::vector<vec3>& startPoints, const std::vector<SurfaceSample>& field, float h);
-    void collideBodies();
+    void collideBodies(); // broad phase through m_grid, narrow phase point-vs-SDF
     void resolveSceneContact(Body& body, const Contact& c, float h);
     void resolvePairContact(Body& a, Body& b, const vec3& point, const vec3& normal, float penetration);
 
     std::vector<Body> m_bodies;
     std::vector<vec3> m_startPoints;
+    BodyGrid m_grid;
+    std::vector<int> m_pairStamp;
     unsigned long long m_version = 0;
 };
 

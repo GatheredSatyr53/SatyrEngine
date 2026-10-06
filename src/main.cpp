@@ -4,6 +4,7 @@
 // window, a fly camera, uniforms, #include support, hot reload, screenshots and a basic
 // sphere physics system that collides with the scene's distance field.
 
+#include "engine/BodyTextures.h"
 #include "engine/Camera.h"
 #include "engine/Image.h"
 #include "engine/Physics.h"
@@ -19,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -387,37 +389,8 @@ void uploadSceneUniforms(Shader& shader, const FrameUniforms& u)
     shader.set("uAccumFrame", u.accumFrame);
 }
 
-void uploadBodies(Shader& shader, const Physics& physics)
-{
-    static std::vector<float> pos, rot, ext;
-    const std::vector<Body>& bodies = physics.bodies();
-    const size_t n = bodies.size();
-    pos.resize(n * 4);
-    rot.resize(n * 4);
-    ext.resize(n * 4);
-    for (size_t i = 0; i < n; ++i) {
-        const Body& b = bodies[i];
-        pos[i * 4 + 0] = b.position.x;
-        pos[i * 4 + 1] = b.position.y;
-        pos[i * 4 + 2] = b.position.z;
-        pos[i * 4 + 3] = b.radius;
-        rot[i * 4 + 0] = b.orientation.x;
-        rot[i * 4 + 1] = b.orientation.y;
-        rot[i * 4 + 2] = b.orientation.z;
-        rot[i * 4 + 3] = b.orientation.w;
-        ext[i * 4 + 0] = b.halfExtents.x;
-        ext[i * 4 + 1] = b.halfExtents.y;
-        ext[i * 4 + 2] = b.halfExtents.z;
-        ext[i * 4 + 3] = b.shape == Shape::Sphere ? 0.0f : (b.shape == Shape::Box ? 1.0f : (b.shape == Shape::Box20 ? 2.0f : 3.0f));
-    }
-    shader.set("uBodyCount", static_cast<int>(n));
-    shader.setVec4Array("uBodies[0]", pos.data(), static_cast<int>(n));
-    shader.setVec4Array("uBodyRot[0]", rot.data(), static_cast<int>(n));
-    shader.setVec4Array("uBodyExt[0]", ext.data(), static_cast<int>(n));
-    vec3 center;
-    float radius = 0.0f;
-    if (physics.boundingSphere(center, radius)) shader.set("uBodyBounds", center.x, center.y, center.z, radius);
-}
+// Texture unit 0 belongs to the probe's query texture; body textures start above it.
+constexpr int kBodyTextureUnit = 1;
 
 class BodyFactory {
 public:
@@ -597,9 +570,12 @@ int main(int argc, char** argv)
     Physics physics;
     BodyFactory factory;
     SdfProbe probe(preprocessor, kMaxBodies * kMaxSamplesPerBody);
+    BodyTextures bodyTextures;
     bool physicsEnabled = opt.physics;   // the system as a whole (--no-physics, probe init)
     bool physicsActive = false;          // usable with the current scene
     if (physicsEnabled && !probe.init()) physicsEnabled = false;
+    if (physicsEnabled && !bodyTextures.init()) physicsEnabled = false;
+    double physicsSeconds = 0.0;         // CPU time in the step and grid upload, for the stats
     if (physicsEnabled) {
         probe.load(vertexFile, scenes.current(), prelude);
         physicsActive = refreshPhysicsState(probe, shader, preprocessor, scenes.current());
@@ -793,8 +769,11 @@ int main(int argc, char** argv)
         if (physicsActive) {
             // Samples requested last frame describe the field at the bodies' current positions.
             probe.fetch(field);
+            const auto physicsStart = std::chrono::steady_clock::now();
             if (!paused) physics.step(dt, field);
             physics.samplePoints(bodyPositions);
+            bodyTextures.update(physics.bodies());
+            physicsSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - physicsStart).count();
             probe.submit(bodyPositions, [&](Shader& s) { uploadSceneUniforms(s, u); });
             // The probe rendered into its own framebuffer; restore this frame's target.
             renderer.beginFrame(window.framebufferWidth(), window.framebufferHeight(), renderScale);
@@ -808,7 +787,8 @@ int main(int argc, char** argv)
             if (shader.valid()) {
                 shader.bind();
                 uploadSceneUniforms(shader, u);
-                uploadBodies(shader, physics);
+                if (physicsActive) bodyTextures.bind(shader, kBodyTextureUnit);
+                else shader.set("uBodyCount", 0);
                 renderer.drawFullscreen();
             } else {
                 glClearColor(0.35f, 0.0f, 0.3f, 1.0f);
@@ -853,8 +833,8 @@ int main(int argc, char** argv)
 
     if (frame > 0) {
         const double elapsed = glfwGetTime() - runStart;
-        std::printf("[stats] %d frames in %.2f s, %.2f ms/frame average, %d samples accumulated\n",
-                    frame, elapsed, 1000.0 * elapsed / frame, accumFrames);
+        std::printf("[stats] %d frames in %.2f s, %.2f ms/frame average, %d samples accumulated, physics CPU %.2f ms/frame\n",
+                    frame, elapsed, 1000.0 * elapsed / frame, accumFrames, 1000.0 * physicsSeconds / frame);
     }
     if (physicsEnabled && !physics.empty()) {
         float lowest = 1e9f, maxSpeed = 0.0f, maxSpin = 0.0f;

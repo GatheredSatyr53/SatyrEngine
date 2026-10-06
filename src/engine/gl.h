@@ -60,6 +60,8 @@ typedef std::ptrdiff_t GLsizeiptr;
 #define GL_RGBA8                          0x8058
 #define GL_RGBA16F                        0x881A
 #define GL_RGBA32F                        0x8814
+#define GL_R32F                           0x822E
+#define GL_RED                            0x1903
 #define GL_PIXEL_PACK_BUFFER              0x88EB
 #define GL_STREAM_READ                    0x88E1
 #define GL_MAP_READ_BIT                   0x0001
