@@ -43,6 +43,7 @@ struct Options {
     double fixedDt = 0.0;           // >0: advance time by this much per frame instead of the clock
     int frames = -1;                // exit after this many frames (-1 = run until closed)
     int spawn = 0;                  // balls dropped at start
+    int spawnBoxes = 0;             // boxes dropped at start
     fs::path scene;
     fs::path shaderDir;
     fs::path screenshot;            // when set, saved on the last frame (or when --frames is given)
@@ -69,6 +70,7 @@ void printUsage(const char* exe)
         "      --frames N       render N frames and exit (handy with --screenshot)\n"
         "      --screenshot F   save a PNG to F before exiting\n"
         "      --spawn N        drop N physics balls at start\n"
+        "      --spawn-boxes N  drop N physics boxes at start\n"
         "      --paused         start with scene time paused, so frames accumulate immediately\n"
         "      --no-physics     disable the physics system\n"
         "      --no-vsync       disable vertical sync\n"
@@ -89,7 +91,8 @@ void printControls()
         "  R                     reload shaders (they also reload automatically on save)\n"
         "  P / T                 pause / reset scene time (physics pauses too)\n"
         "                        while paused and the camera is still, frames accumulate: AA converges\n"
-        "  B / G / X             throw a ball / drop a handful / clear all balls\n"
+        "  B / N                 throw a ball / throw a box\n"
+        "  G / X                 drop a handful of balls and boxes / clear all bodies\n"
         "  - / =                 lower / raise render resolution scale\n"
         "  F2 or F12             screenshot (saved into ./screenshots)\n"
         "  F11                   toggle fullscreen\n"
@@ -137,6 +140,9 @@ bool parseArgs(int argc, char** argv, Options& opt)
         } else if (a == "--spawn") {
             if (!(v = needValue(i, a.c_str()))) return false;
             opt.spawn = std::atoi(v);
+        } else if (a == "--spawn-boxes") {
+            if (!(v = needValue(i, a.c_str()))) return false;
+            opt.spawnBoxes = std::atoi(v);
         } else if (a == "--screenshot") {
             if (!(v = needValue(i, a.c_str()))) return false;
             opt.screenshot = v;
@@ -363,51 +369,76 @@ void uploadSceneUniforms(Shader& shader, const FrameUniforms& u)
 
 void uploadBodies(Shader& shader, const Physics& physics)
 {
-    static std::vector<float> packed;
+    static std::vector<float> pos, rot, ext;
     const std::vector<Body>& bodies = physics.bodies();
-    packed.resize(bodies.size() * 4);
-    for (size_t i = 0; i < bodies.size(); ++i) {
-        packed[i * 4 + 0] = bodies[i].position.x;
-        packed[i * 4 + 1] = bodies[i].position.y;
-        packed[i * 4 + 2] = bodies[i].position.z;
-        packed[i * 4 + 3] = bodies[i].radius;
+    const size_t n = bodies.size();
+    pos.resize(n * 4);
+    rot.resize(n * 4);
+    ext.resize(n * 4);
+    for (size_t i = 0; i < n; ++i) {
+        const Body& b = bodies[i];
+        pos[i * 4 + 0] = b.position.x;
+        pos[i * 4 + 1] = b.position.y;
+        pos[i * 4 + 2] = b.position.z;
+        pos[i * 4 + 3] = b.radius;
+        rot[i * 4 + 0] = b.orientation.x;
+        rot[i * 4 + 1] = b.orientation.y;
+        rot[i * 4 + 2] = b.orientation.z;
+        rot[i * 4 + 3] = b.orientation.w;
+        ext[i * 4 + 0] = b.halfExtents.x;
+        ext[i * 4 + 1] = b.halfExtents.y;
+        ext[i * 4 + 2] = b.halfExtents.z;
+        ext[i * 4 + 3] = b.shape == Shape::Box ? 1.0f : 0.0f;
     }
-    shader.set("uBodyCount", static_cast<int>(bodies.size()));
-    shader.setVec4Array("uBodies[0]", packed.data(), static_cast<int>(bodies.size()));
+    shader.set("uBodyCount", static_cast<int>(n));
+    shader.setVec4Array("uBodies[0]", pos.data(), static_cast<int>(n));
+    shader.setVec4Array("uBodyRot[0]", rot.data(), static_cast<int>(n));
+    shader.setVec4Array("uBodyExt[0]", ext.data(), static_cast<int>(n));
     vec3 center;
     float radius = 0.0f;
     if (physics.boundingSphere(center, radius)) shader.set("uBodyBounds", center.x, center.y, center.z, radius);
 }
 
-class BallFactory {
+class BodyFactory {
 public:
-    BallFactory() : m_rng(1234u) {}
+    BodyFactory() : m_rng(1234u) {}
 
     // Launches a ball from just in front of the camera along its view direction.
-    bool throwFrom(const Camera& camera, Physics& physics)
+    bool throwBall(const Camera& camera, Physics& physics)
     {
-        Body b;
-        b.radius = randomRadius();
-        b.position = camera.position + camera.forward() * (0.6f + b.radius);
+        const float r = randomRadius();
+        Body b = Body::makeSphere(camera.position + camera.forward() * (0.6f + r), r);
         b.velocity = camera.forward() * 12.0f;
-        b.mass = b.radius * b.radius * b.radius * 40.0f;
         b.restitution = 0.55f;
         return physics.add(b);
     }
 
-    // Drops `count` balls in a loose cloud above `point`.
-    int dropAbove(const vec3& point, int count, Physics& physics)
+    // Launches a spinning box.
+    bool throwBox(const Camera& camera, Physics& physics)
+    {
+        const vec3 half = randomHalfExtents();
+        Body b = Body::makeBox(camera.position + camera.forward() * (0.6f + length(half)), half);
+        b.orientation = randomOrientation();
+        b.velocity = camera.forward() * 10.0f;
+        b.angularVelocity = randomSpin(4.0f);
+        return physics.add(b);
+    }
+
+    // Drops `count` bodies in a loose cloud above `point`. Shape::Sphere / Shape::Box, or
+    // alternate between the two when `mixed` is set.
+    int dropAbove(const vec3& point, int count, Physics& physics, Shape shape, bool mixed = false)
     {
         std::uniform_real_distribution<float> spread(-1.5f, 1.5f);
         std::uniform_real_distribution<float> lift(3.0f, 6.0f);
         int added = 0;
         for (int i = 0; i < count; ++i) {
-            Body b;
-            b.radius = randomRadius();
-            b.position = point + vec3(spread(m_rng), lift(m_rng), spread(m_rng));
-            b.velocity = vec3(0.0f, 0.0f, 0.0f);
-            b.mass = b.radius * b.radius * b.radius * 40.0f;
-            b.restitution = 0.5f;
+            const vec3 at = point + vec3(spread(m_rng), lift(m_rng), spread(m_rng));
+            const Shape s = mixed ? (i % 2 == 0 ? Shape::Sphere : Shape::Box) : shape;
+            Body b = s == Shape::Sphere ? Body::makeSphere(at, randomRadius()) : Body::makeBox(at, randomHalfExtents());
+            if (s == Shape::Box) {
+                b.orientation = randomOrientation();
+                b.angularVelocity = randomSpin(1.5f);
+            }
             if (!physics.add(b)) break;
             ++added;
         }
@@ -419,6 +450,27 @@ private:
     {
         std::uniform_real_distribution<float> r(0.22f, 0.42f);
         return r(m_rng);
+    }
+
+    vec3 randomHalfExtents()
+    {
+        std::uniform_real_distribution<float> e(0.15f, 0.4f);
+        return {e(m_rng), e(m_rng), e(m_rng)};
+    }
+
+    quat randomOrientation()
+    {
+        std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+        std::uniform_real_distribution<float> angle(0.0f, 2.0f * kPi);
+        vec3 axis{u(m_rng), u(m_rng), u(m_rng)};
+        if (dot(axis, axis) < 1e-4f) axis = {0.0f, 1.0f, 0.0f};
+        return quatFromAxisAngle(axis, angle(m_rng));
+    }
+
+    vec3 randomSpin(float maxRate)
+    {
+        std::uniform_real_distribution<float> u(-maxRate, maxRate);
+        return {u(m_rng), u(m_rng), u(m_rng)};
     }
 
     std::mt19937 m_rng;
@@ -516,8 +568,8 @@ int main(int argc, char** argv)
     shader.load(vertexFile, scenes.current());
 
     Physics physics;
-    BallFactory balls;
-    SdfProbe probe(preprocessor, kMaxBodies);
+    BodyFactory factory;
+    SdfProbe probe(preprocessor, kMaxBodies * kMaxSamplesPerBody);
     bool physicsEnabled = opt.physics;   // the system as a whole (--no-physics, probe init)
     bool physicsActive = false;          // usable with the current scene
     if (physicsEnabled && !probe.init()) physicsEnabled = false;
@@ -528,7 +580,8 @@ int main(int argc, char** argv)
 
     Camera camera;
     vec3 sceneTarget = applySceneView(shader, camera);
-    if (physicsEnabled && opt.spawn > 0) balls.dropAbove(sceneTarget, opt.spawn, physics);
+    if (physicsEnabled && opt.spawn > 0) factory.dropAbove(sceneTarget, opt.spawn, physics, Shape::Sphere);
+    if (physicsEnabled && opt.spawnBoxes > 0) factory.dropAbove(sceneTarget, opt.spawnBoxes, physics, Shape::Box);
 
     printControls();
 
@@ -613,9 +666,12 @@ int main(int argc, char** argv)
                 physicsActive = refreshPhysicsState(probe, shader, preprocessor, scenes.current());
             }
             if (physicsActive) {
-                if (in.pressed(GLFW_KEY_B) && !balls.throwFrom(camera, physics))
+                if (in.pressed(GLFW_KEY_B) && !factory.throwBall(camera, physics))
                     std::printf("[physics] body limit (%d) reached\n", kMaxBodies);
-                if (in.pressed(GLFW_KEY_G)) balls.dropAbove(camera.position + camera.forward() * 4.0f, 8, physics);
+                if (in.pressed(GLFW_KEY_N) && !factory.throwBox(camera, physics))
+                    std::printf("[physics] body limit (%d) reached\n", kMaxBodies);
+                if (in.pressed(GLFW_KEY_G))
+                    factory.dropAbove(camera.position + camera.forward() * 4.0f, 8, physics, Shape::Sphere, true);
                 if (in.pressed(GLFW_KEY_X)) physics.clear();
             }
         }
@@ -703,7 +759,7 @@ int main(int argc, char** argv)
             // Samples requested last frame describe the field at the bodies' current positions.
             probe.fetch(field);
             if (!paused) physics.step(dt, field);
-            physics.positions(bodyPositions);
+            physics.samplePoints(bodyPositions);
             probe.submit(bodyPositions, [&](Shader& s) { uploadSceneUniforms(s, u); });
             // The probe rendered into its own framebuffer; restore this frame's target.
             renderer.beginFrame(window.framebufferWidth(), window.framebufferHeight(), renderScale);
@@ -766,9 +822,17 @@ int main(int argc, char** argv)
                     frame, elapsed, 1000.0 * elapsed / frame, accumFrames);
     }
     if (physicsEnabled && !physics.empty()) {
-        float lowest = 1e9f;
-        for (const Body& b : physics.bodies()) lowest = std::min(lowest, b.position.y);
-        std::printf("[physics] %d bodies at exit, lowest centre y = %.3f\n", static_cast<int>(physics.size()), static_cast<double>(lowest));
+        float lowest = 1e9f, maxSpeed = 0.0f, maxSpin = 0.0f;
+        int boxes = 0;
+        for (const Body& b : physics.bodies()) {
+            lowest = std::min(lowest, b.position.y);
+            maxSpeed = std::max(maxSpeed, length(b.velocity));
+            maxSpin = std::max(maxSpin, length(b.angularVelocity));
+            if (b.shape == Shape::Box) ++boxes;
+        }
+        std::printf("[physics] %d bodies at exit (%d boxes), lowest centre y = %.3f, max speed %.3f m/s, max spin %.3f rad/s\n",
+                    static_cast<int>(physics.size()), boxes, static_cast<double>(lowest),
+                    static_cast<double>(maxSpeed), static_cast<double>(maxSpin));
     }
     return 0;
 }
